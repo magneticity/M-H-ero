@@ -56,6 +56,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.autoRescaleChk = QtWidgets.QCheckBox("Auto-rescale")
         self.autoRescaleChk.setChecked(True)
 
+        self.bgApplyBtn = QtWidgets.QPushButton("Apply BG")
+        self.bgCancelBtn = QtWidgets.QPushButton("Cancel BG")
+        self.bgApplyBtn.setVisible(False)
+        self.bgCancelBtn.setVisible(False)
+
+        h.addWidget(self.bgApplyBtn)
+        h.addWidget(self.bgCancelBtn)
+
+        self.bgApplyBtn.clicked.connect(self._bg_commit)
+        self.bgCancelBtn.clicked.connect(self._bg_cancel)
+
+        # Background-mode state
+        self.bg_mode_active = False
+        self._bg_df_before = None   # df snapshot before starting BG mode
+        self._bg_x_col = None
+        self._bg_y_col = None
+        self._bg_threshold = None
+
+        self._bg_vline = None
+        self._bg_cid_press = None
+        self._bg_cid_motion = None
+        self._bg_cid_release = None
+
         h.addWidget(QtWidgets.QLabel("X:"))
         h.addWidget(self.xCombo, 1)
         h.addWidget(QtWidgets.QLabel("Y:"))
@@ -96,6 +119,11 @@ class MainWindow(QtWidgets.QMainWindow):
         process_menu.addAction(center_y_act)
 
         process_menu.addSeparator()
+
+        bg_act = QtGui.QAction("Linear background (high field)…", self)
+        bg_act.setStatusTip("Fit a straight line to the high-field region and subtract it")
+        bg_act.triggered.connect(self._bg_start_mode)
+        process_menu.addAction(bg_act)
 
         undo_act = QtGui.QAction("&Undo last operation", self)
         undo_act.setShortcut("Ctrl+Z")
@@ -423,7 +451,27 @@ class MainWindow(QtWidgets.QMainWindow):
                     params={"column": col_name, "offset": offset},
                 )
 
-        # elif op == "background_subtract": ...
+        elif op == "bg_linear_branches":
+            xcol = params.get("x_column")
+            ycol = params.get("column")
+            m_bg = float(params.get("m_bg", 0.0))
+
+            if xcol not in self.df.columns or ycol not in self.df.columns:
+                return
+
+            x = np.asarray(self.df[xcol].to_numpy(), dtype=float)
+            y = np.asarray(self.df[ycol].to_numpy(), dtype=float)
+
+            finite = np.isfinite(x) & np.isfinite(y)
+            y_corr = y.copy()
+            y_corr[finite] = y[finite] - m_bg * x[finite]
+
+            self.df[ycol] = y_corr
+
+            if record:
+                self._add_history_entry("bg_linear_branches", params)
+
+        # ... more operations in future
         # elif op == "drift_correct": ...
         # (add more operations here as you implement them)
 
@@ -450,6 +498,270 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.showMessage(f"Centered {y_name} about 0")
 
         self._replot()
+
+    def _compute_bg_corrected(self, df, xcol, ycol, threshold):
+        """
+        Fit a straight line to the high-field *branches* of a hysteresis loop:
+
+        - Positive branch:   x >=  +threshold
+        - Negative branch:   x <=  -threshold
+
+        Each branch is fit separately:
+        y_pos ≈ m_pos * x + b_pos
+        y_neg ≈ m_neg * x + b_neg
+
+        The background slope m_bg is taken as the average of m_pos and m_neg.
+        Only this slope is subtracted:
+
+        y_corr = y - m_bg * x
+        """
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
+
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 2:
+            raise ValueError("Not enough finite points in the data.")
+
+        # Ensure threshold is positive
+        thr = float(abs(threshold))
+
+        mask_pos = finite & (x >= thr)
+        mask_neg = finite & (x <= -thr)
+
+        if mask_pos.sum() < 2 or mask_neg.sum() < 2:
+            raise ValueError("Not enough high-field points on one or both branches.")
+
+        x_pos = x[mask_pos]
+        y_pos = y[mask_pos]
+        x_neg = x[mask_neg]
+        y_neg = y[mask_neg]
+
+        # Guard against nearly constant field region in either branch
+        if np.allclose(x_pos, x_pos[0]):
+            raise ValueError("Positive high-field branch has almost constant H; cannot fit a line.")
+        if np.allclose(x_neg, x_neg[0]):
+            raise ValueError("Negative high-field branch has almost constant H; cannot fit a line.")
+
+        m_pos, b_pos = np.polyfit(x_pos, y_pos, 1)
+        m_neg, b_neg = np.polyfit(x_neg, y_neg, 1)
+
+        # Background slope: average of the two branch slopes
+        m_bg = 0.5 * (m_pos + m_neg)
+
+        # Subtract only the background slope
+        y_corr = y - m_bg * x
+
+        info = {
+            "m_pos": float(m_pos),
+            "b_pos": float(b_pos),
+            "m_neg": float(m_neg),
+            "b_neg": float(b_neg),
+            "m_bg": float(m_bg),
+            "threshold": thr,
+        }
+        return y_corr, info
+
+
+    def _bg_start_mode(self):
+        """Enter interactive background-subtraction mode."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before background subtraction.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(self, "Select columns",
+                                          "Select X and Y columns before background subtraction.")
+            return
+
+        # Snapshot current df (this is the state we'll operate on)
+        self._bg_df_before = self.df.copy(deep=True)
+        self._bg_x_col = x_name
+        self._bg_y_col = y_name
+
+        x = self._bg_df_before[x_name].to_numpy()
+        if x.size == 0:
+            QtWidgets.QMessageBox.warning(self, "No data", "Selected X column is empty.")
+            return
+
+        # Choose an initial threshold: e.g. 70% of max |x|
+        self._bg_threshold = 0.7 * float(np.nanmax(np.abs(x)))
+        
+        self.bg_mode_active = True
+        self.bgApplyBtn.setVisible(True)
+        self.bgCancelBtn.setVisible(True)
+        self.status.showMessage("Background mode: drag the vertical line to set high-field threshold, then click 'Apply BG'.")
+
+        # Create vertical line
+        ax = self.canvas.ax
+        if self._bg_vline is not None:
+            self._bg_vline.remove()
+        self._bg_vline = ax.axvline(self._bg_threshold, linestyle="--")
+
+        # Connect matplotlib events for dragging
+        canvas = self.canvas
+        self._bg_cid_press = canvas.mpl_connect("button_press_event", self._bg_on_press)
+        self._bg_cid_motion = canvas.mpl_connect("motion_notify_event", self._bg_on_motion)
+        self._bg_cid_release = canvas.mpl_connect("button_release_event", self._bg_on_release)
+        self._bg_dragging = False
+
+        # Draw initial preview
+        self._bg_update_preview()
+
+    def _bg_on_press(self, event):
+        if not self.bg_mode_active or event.inaxes != self.canvas.ax:
+            return
+        if event.xdata is None:
+            return
+
+        # Check if click is near the vertical line
+        x_line = self._bg_threshold
+        tol = 0.02 * (self.canvas.ax.get_xlim()[1] - self.canvas.ax.get_xlim()[0])
+        if abs(event.xdata - x_line) < tol:
+            self._bg_dragging = True
+
+    def _bg_on_motion(self, event):
+        if not self.bg_mode_active or not self._bg_dragging:
+            return
+        if event.inaxes != self.canvas.ax or event.xdata is None:
+            return
+
+        # Update threshold and preview
+        self._bg_threshold = float(event.xdata)
+        self._bg_update_preview()
+
+    def _bg_on_release(self, event):
+        if not self.bg_mode_active:
+            return
+        self._bg_dragging = False
+
+    def _bg_update_preview(self):
+        if not self.bg_mode_active or self._bg_df_before is None:
+            return
+
+        df = self._bg_df_before
+        xcol = self._bg_x_col
+        ycol = self._bg_y_col
+        thr = self._bg_threshold
+
+        x = df[xcol].to_numpy()
+
+        ax = self.canvas.ax
+        ax.clear()
+
+        try:
+            y_corr, info = self._compute_bg_corrected(df, xcol, ycol, thr)
+            y_plot = y_corr
+            m_bg = info["m_bg"]
+            title_extra = f"  (m_bg={m_bg:.3g}, m+={info['m_pos']:.3g}, m-={info['m_neg']:.3g})"
+        except Exception as e:
+            # If fit fails (threshold too large, etc.), just show original data
+            y_plot = df[ycol].to_numpy()
+            title_extra = f"  (BG fit invalid: {e})"
+
+        # Plot in *original* H order (so loop shape is preserved)
+        ax.plot(x, y_plot, linewidth=1.5)
+
+        ax.set_xlabel(xcol)
+        ax.set_ylabel(ycol + " (preview, BG-subtracted)")
+        ax.set_title("Preview: background subtraction" + title_extra)
+        ax.grid(True, alpha=0.3)
+
+        # Draw threshold as symmetric ±thr guides
+        self._bg_vline = ax.axvline(+abs(thr), linestyle="--")
+        ax.axvline(-abs(thr), linestyle="--")
+
+        # Optional: shade high-field regions
+        x_max = np.nanmax(np.abs(x[np.isfinite(x)]))
+        ax.axvspan(+abs(thr), +x_max, alpha=0.1)
+        ax.axvspan(-x_max, -abs(thr), alpha=0.1)
+
+        self.canvas.fig.canvas.draw_idle()
+        self.status.showMessage(
+            f"Background mode: |{xcol}| >= {abs(thr):.4g}; drag line, then 'Apply BG'"
+        )
+
+    def _bg_disconnect_events(self):
+        if self._bg_cid_press is not None:
+            self.canvas.mpl_disconnect(self._bg_cid_press)
+        if self._bg_cid_motion is not None:
+            self.canvas.mpl_disconnect(self._bg_cid_motion)
+        if self._bg_cid_release is not None:
+            self.canvas.mpl_disconnect(self._bg_cid_release)
+        self._bg_cid_press = self._bg_cid_motion = self._bg_cid_release = None
+
+    def _bg_commit(self):
+        if not self.bg_mode_active or self._bg_df_before is None:
+            return
+
+        df_before = self._bg_df_before
+        xcol = self._bg_x_col
+        ycol = self._bg_y_col
+        thr = self._bg_threshold
+
+        try:
+            y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Cannot apply background", str(e))
+            return
+
+        # Commit: replace current df with BG-subtracted version
+        self.df = df_before.copy(deep=True)
+        self.df[ycol] = y_corr
+
+        # Log operation so undo/replay works
+        self._add_history_entry(
+            op="bg_linear_branches",
+            params={
+                "x_column": xcol,
+                "column": ycol,
+                "threshold": info["threshold"],
+                "m_pos": info["m_pos"],
+                "b_pos": info["b_pos"],
+                "m_neg": info["m_neg"],
+                "b_neg": info["b_neg"],
+                "m_bg": info["m_bg"],
+            },
+        )
+
+        self._bg_exit_mode()
+        self.status.showMessage(
+            f"Applied BG: |{xcol}|>={info['threshold']:.4g}, m_bg={info['m_bg']:.3g}"
+        )
+        self._replot()
+
+    def _bg_cancel(self):
+        """User clicks 'Cancel BG' – discard preview and restore df."""
+        if not self.bg_mode_active:
+            return
+
+        # Just restore df_before and exit
+        if self._bg_df_before is not None:
+            self.df = self._bg_df_before
+
+        self._bg_exit_mode()
+        self.status.showMessage("Background subtraction canceled.")
+        self._replot()
+
+    def _bg_exit_mode(self):
+        """Common cleanup for leaving background mode."""
+        self.bg_mode_active = False
+        self.bgApplyBtn.setVisible(False)
+        self.bgCancelBtn.setVisible(False)
+        self._bg_disconnect_events()
+
+        self._bg_df_before = None
+        self._bg_x_col = None
+        self._bg_y_col = None
+        self._bg_threshold = None
+
+        if self._bg_vline is not None:
+            try:
+                self._bg_vline.remove()
+            except Exception:
+                pass
+            self._bg_vline = None
 
 
     def _add_history_entry(self, op, params):
