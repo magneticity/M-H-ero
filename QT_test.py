@@ -95,6 +95,14 @@ class MainWindow(QtWidgets.QMainWindow):
         center_y_act.triggered.connect(self.center_y_about_zero)
         process_menu.addAction(center_y_act)
 
+        process_menu.addSeparator()
+
+        undo_act = QtGui.QAction("&Undo last operation", self)
+        undo_act.setShortcut("Ctrl+Z")
+        undo_act.setStatusTip("Undo the last data correction")
+        undo_act.triggered.connect(self.undo_last_operation)
+        process_menu.addAction(undo_act)
+
         export_menu = self.menuBar().addMenu("&Export")
         export_hist_act = QtGui.QAction("Export &History…", self)
         export_hist_act.triggered.connect(self.export_history)
@@ -379,8 +387,46 @@ class MainWindow(QtWidgets.QMainWindow):
             raise ValueError("Parsed an empty table after handling headers and bad lines.")
         return df
     
-    # ---------- Data processing ----------
-    
+    # ---------- Data operations ----------
+    def _apply_operation(self, op, params, record=True):
+        """
+        Apply a single operation to self.df.
+
+        op      : string, e.g. "center_y"
+        params  : dict, operation-specific parameters
+        record  : if True, also append to self.history
+        """
+        if self.df is None:
+            return
+
+        if op == "center_y":
+            col_name = params.get("column")
+            if col_name not in self.df.columns:
+                return
+
+            col = self.df[col_name]
+
+            if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                return
+
+            # Use given offset if present, otherwise recompute
+            if "offset" in params:
+                offset = float(params["offset"])
+            else:
+                offset = float(col.mean(skipna=True))
+
+            self.df[col_name] = col - offset
+
+            if record:
+                self._add_history_entry(
+                    op="center_y",
+                    params={"column": col_name, "offset": offset},
+                )
+
+        # elif op == "background_subtract": ...
+        # elif op == "drift_correct": ...
+        # (add more operations here as you implement them)
+
     # Shift about y=0
     def center_y_about_zero(self):
         """Shift the currently selected Y column so its mean is 0."""
@@ -393,28 +439,18 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "No Y column", "Select a Y column first.")
             return
 
-        col = self.df[y_name]
-        # Only operate on numeric data
-        if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
-            QtWidgets.QMessageBox.warning(self, "Not numeric",
-                                          f"Column '{y_name}' is not numeric.")
-            return
+        # Delegate to operation dispatcher (record=True by default)
+        self._apply_operation("center_y", {"column": y_name}, record=True)
 
-        # Compute offset (mean) and apply
-        offset = float(col.mean(skipna=True))
-        self.df[y_name] = col - offset
+        # Grab offset of last operation for status text (optional)
+        if self.history and self.history[-1]["op"] == "center_y":
+            offset = self.history[-1]["params"].get("offset", 0.0)
+            self.status.showMessage(f"Centered {y_name} about 0 (offset {offset:.4g})")
+        else:
+            self.status.showMessage(f"Centered {y_name} about 0")
 
-        # Record in history
-        self._add_history_entry(
-            op="center_y",
-            params={
-                "column": y_name,
-                "offset": offset,
-            },
-        )
-
-        self.status.showMessage(f"Centered {y_name} about 0 (offset {offset:.4g})")
         self._replot()
+
 
     def _add_history_entry(self, op, params):
         """Append an operation to the history log."""
@@ -429,19 +465,63 @@ class MainWindow(QtWidgets.QMainWindow):
         # optional: print to console for debugging
         # print("HISTORY:", entry)
 
+    def undo_last_operation(self):
+        """Remove the last operation from history and rebuild df from scratch."""
+        if not self.history:
+            QtWidgets.QMessageBox.information(self, "Nothing to undo",
+                                              "There are no operations to undo.")
+            return
+
+        # Remove last operation
+        last = self.history.pop()
+
+        # Rebuild df from original + remaining history
+        self._rebuild_df_from_history()
+
+        # Update status + plot
+        self.status.showMessage(f"Undid: {last['op']}")
+        self._replot()
+
+    def _rebuild_df_from_history(self):
+        """Reset df to original_df and replay all history entries."""
+        if self.original_df is None:
+            return
+
+        # Start from a clean copy of the raw data
+        self.df = self.original_df.copy(deep=True)
+
+        # Recompute numeric columns
+        self.numeric_cols = [
+            c for c in self.df.columns if np.issubdtype(self.df[c].dtype, np.number)
+        ]
+
+        # Try to keep current X/Y choices if they still exist
+        old_x = self.xCombo.currentText() if self.xCombo.count() > 0 else None
+        old_y = self.yCombo.currentText() if self.yCombo.count() > 0 else None
+
+        # Re-apply all operations without re-recording them
+        for entry in self.history:
+            self._apply_operation(entry["op"], entry["params"], record=False)
+
+        # Repopulate combos if needed
+        # (e.g. after operations that add/remove columns in the future)
+        if not self.numeric_cols:
+            return
+
+        # Ensure combos list the right columns
+        self._populate_combos()
+
+        # Try to restore previous x/y selection when still valid
+        def restore_combo(combo, name):
+            if name and combo.findText(name) != -1:
+                combo.setCurrentText(name)
+
+        restore_combo(self.xCombo, old_x)
+        restore_combo(self.yCombo, old_y)
+
+
     
 
-def _postprocess_df(df):
-    import pandas as pd
-    import numpy as np
-    # Coerce numeric where possible (without clobbering mixed text columns)
-    for c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="ignore")
-    # Drop fully-empty cols/rows
-    df = df.dropna(axis=1, how="all").dropna(how="all")
-    if df.empty:
-        raise ValueError("Parsed an empty table after skipping headers.")
-    return df
 
 
 def main():
