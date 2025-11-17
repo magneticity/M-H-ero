@@ -99,6 +99,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.status.showMessage("Ready")
 
+        # --- Physical parameters dock ---
+        self.paramDock = QtWidgets.QDockWidget("Physical Parameters", self)
+        self.paramDock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+
+        panel = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(panel)
+        form.setContentsMargins(8, 8, 8, 8)
+        form.setSpacing(4)
+
+        self.lblHc = QtWidgets.QLabel("—")
+        self.lblHcPlus = QtWidgets.QLabel("—")
+        self.lblHcMinus = QtWidgets.QLabel("—")
+        self.lblMs = QtWidgets.QLabel("—")
+        self.lblBgSlope = QtWidgets.QLabel("—")
+
+        form.addRow("Hc (avg):", self.lblHc)
+        form.addRow("Hc+:", self.lblHcPlus)
+        form.addRow("Hc−:", self.lblHcMinus)
+        form.addRow("M\u209B (sat):", self.lblMs)      # Mₛ
+        form.addRow("BG slope:", self.lblBgSlope)
+
+        self.paramDock.setWidget(panel)
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.paramDock)
+
         # Menu
         file_menu = self.menuBar().addMenu("&File")
         open_act = QtGui.QAction("&Open…", self)
@@ -114,16 +140,18 @@ class MainWindow(QtWidgets.QMainWindow):
         process_menu = self.menuBar().addMenu("&Process")
 
         center_y_act = QtGui.QAction("Center &Y about 0", self)
+        center_y_act.setShortcut("Ctrl+Y")
         center_y_act.setStatusTip("Subtract mean of current Y column so it is centered at zero")
         center_y_act.triggered.connect(self.center_y_about_zero)
         process_menu.addAction(center_y_act)
 
-        process_menu.addSeparator()
-
         bg_act = QtGui.QAction("Linear background (high field)…", self)
+        bg_act.setShortcut("Ctrl+B")
         bg_act.setStatusTip("Fit a straight line to the high-field region and subtract it")
         bg_act.triggered.connect(self._bg_start_mode)
         process_menu.addAction(bg_act)
+
+        process_menu.addSeparator()
 
         undo_act = QtGui.QAction("&Undo last operation", self)
         undo_act.setShortcut("Ctrl+Z")
@@ -278,6 +306,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
+        self._update_parameters()
 
     def _swap_axes(self):
         if self.xCombo.count() == 0 or self.yCombo.count() == 0:
@@ -501,7 +530,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _compute_bg_corrected(self, df, xcol, ycol, threshold):
         """
-        Fit a straight line to the high-field *branches* of a hysteresis loop:
+        Fit a straight line to the high-field branches of a hysteresis loop:
 
         - Positive branch:   x >=  +threshold
         - Negative branch:   x <=  -threshold
@@ -560,7 +589,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "threshold": thr,
         }
         return y_corr, info
-
 
     def _bg_start_mode(self):
         """Enter interactive background-subtraction mode."""
@@ -637,6 +665,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bg_dragging = False
 
     def _bg_update_preview(self):
+        """Recompute and display BG-subtracted data."""
         if not self.bg_mode_active or self._bg_df_before is None:
             return
 
@@ -645,42 +674,81 @@ class MainWindow(QtWidgets.QMainWindow):
         ycol = self._bg_y_col
         thr = self._bg_threshold
 
-        x = df[xcol].to_numpy()
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
 
         ax = self.canvas.ax
         ax.clear()
 
         try:
             y_corr, info = self._compute_bg_corrected(df, xcol, ycol, thr)
-            y_plot = y_corr
-            m_bg = info["m_bg"]
-            title_extra = f"  (m_bg={m_bg:.3g}, m+={info['m_pos']:.3g}, m-={info['m_neg']:.3g})"
-        except Exception as e:
-            # If fit fails (threshold too large, etc.), just show original data
-            y_plot = df[ycol].to_numpy()
-            title_extra = f"  (BG fit invalid: {e})"
+            m_pos = info["m_pos"]
+            b_pos = info["b_pos"]
+            m_neg = info["m_neg"]
+            b_neg = info["b_neg"]
+            m_bg  = info["m_bg"]
+            thr_abs = info["threshold"]
 
-        # Plot in *original* H order (so loop shape is preserved)
-        ax.plot(x, y_plot, linewidth=1.5)
+            title_extra = (
+                f"  (m_bg={m_bg:.3g}, m+={m_pos:.3g}, m-={m_neg:.3g}, |H|≥{thr_abs:.3g})"
+            )
+        except Exception as e:
+            # If fit fails, just show raw loop and bail on extras
+            ax.plot(x, y, linewidth=1.5, alpha=0.6)
+            ax.set_xlabel(xcol)
+            ax.set_ylabel(ycol)
+            ax.set_title(f"Preview: background subtraction (fit invalid: {e})")
+            ax.grid(True, alpha=0.3)
+            self.canvas.fig.canvas.draw_idle()
+            return
+
+        # 1) Raw loop (faint, in the background)
+        ax.plot(x, y, linewidth=1.0, alpha=0.3, label="raw loop")
+
+        # 2) BG-subtracted loop (preview)
+        ax.plot(x, y_corr, linewidth=1.5, label="BG-subtracted (preview)")
+
+        # 3) Dashed fit lines on ± high-field branches (over raw data)
+        finite = np.isfinite(x) & np.isfinite(y)
+        thr_abs = float(abs(thr_abs))
+
+        mask_pos = finite & (x >= thr_abs)
+        mask_neg = finite & (x <= -thr_abs)
+
+        if mask_pos.sum() >= 2:
+            x_pos = x[mask_pos]
+            # Draw fit line only over the region actually used for the fit
+            x_pos_line = np.linspace(x_pos.min(), x_pos.max(), 100)
+            y_pos_fit = m_pos * x_pos_line + b_pos
+            ax.plot(x_pos_line, y_pos_fit, linestyle="--", linewidth=1.0, label="fit (+H)")
+
+        if mask_neg.sum() >= 2:
+            x_neg = x[mask_neg]
+            x_neg_line = np.linspace(x_neg.min(), x_neg.max(), 100)
+            y_neg_fit = m_neg * x_neg_line + b_neg
+            ax.plot(x_neg_line, y_neg_fit, linestyle="--", linewidth=1.0, label="fit (−H)")
+
+        # 4) Symmetric vertical threshold guides + optional shading
+        self._bg_vline = ax.axvline(+thr_abs, linestyle="--")
+        ax.axvline(-thr_abs, linestyle="--")
+
+        x_finite = x[finite]
+        if x_finite.size > 0:
+            x_max = float(np.nanmax(np.abs(x_finite)))
+            ax.axvspan(+thr_abs, +x_max, alpha=0.05)
+            ax.axvspan(-x_max, -thr_abs, alpha=0.05)
 
         ax.set_xlabel(xcol)
-        ax.set_ylabel(ycol + " (preview, BG-subtracted)")
+        ax.set_ylabel(ycol + " / BG-corrected (preview)")
         ax.set_title("Preview: background subtraction" + title_extra)
         ax.grid(True, alpha=0.3)
-
-        # Draw threshold as symmetric ±thr guides
-        self._bg_vline = ax.axvline(+abs(thr), linestyle="--")
-        ax.axvline(-abs(thr), linestyle="--")
-
-        # Optional: shade high-field regions
-        x_max = np.nanmax(np.abs(x[np.isfinite(x)]))
-        ax.axvspan(+abs(thr), +x_max, alpha=0.1)
-        ax.axvspan(-x_max, -abs(thr), alpha=0.1)
+        ax.legend(loc="best")
 
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(
-            f"Background mode: |{xcol}| >= {abs(thr):.4g}; drag line, then 'Apply BG'"
+            f"Background mode: |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply BG'"
         )
+
 
     def _bg_disconnect_events(self):
         if self._bg_cid_press is not None:
@@ -763,6 +831,143 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             self._bg_vline = None
 
+
+    def _compute_coercivity(self, x, y):
+        """
+        Estimate coercive fields from zero-crossings of y(x):
+
+          - Hc+ : smallest positive field where M crosses zero
+          - Hc− : largest negative field where M crosses zero
+          - Hc  : average half-width, ~ (Hc+ - Hc−)/2
+
+        Uses simple linear interpolation between sign changes.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+
+        if x.size < 2:
+            return None, None, None
+
+        hc_candidates = []
+
+        for i in range(len(x) - 1):
+            y0, y1 = y[i], y[i + 1]
+            x0, x1 = x[i], x[i + 1]
+
+            # Exact zero at a point
+            if y0 == 0:
+                hc_candidates.append(x0)
+                continue
+            if y1 == 0:
+                hc_candidates.append(x1)
+                continue
+
+            # Sign change between points
+            if y0 * y1 < 0:
+                # Linear interpolation to M=0
+                x_zero = x0 - y0 * (x1 - x0) / (y1 - y0)
+                hc_candidates.append(x_zero)
+
+        if not hc_candidates:
+            return None, None, None
+
+        hc_candidates = np.array(hc_candidates, dtype=float)
+        pos = hc_candidates[hc_candidates > 0]
+        neg = hc_candidates[hc_candidates < 0]
+
+        hc_plus = float(pos.min()) if pos.size else None
+        hc_minus = float(neg.max()) if neg.size else None
+
+        hc_avg = None
+        if hc_plus is not None and hc_minus is not None:
+            hc_avg = 0.5 * (hc_plus - hc_minus)
+        elif hc_plus is not None:
+            hc_avg = abs(hc_plus)
+        elif hc_minus is not None:
+            hc_avg = abs(hc_minus)
+
+        return hc_plus, hc_minus, hc_avg
+
+    def _update_parameters(self):
+        """
+        Recompute and display physical parameters for the selected
+        X/Y columns from the current df and history.
+
+        - Coercivity (Hc+, Hc−, Hc) whenever possible.
+        - Background slope and M_sat only after a BG correction
+          (last bg_linear_branches op for these columns).
+        """
+        # Defaults when nothing is available
+        for lbl in [self.lblHc, self.lblHcPlus, self.lblHcMinus,
+                    self.lblMs, self.lblBgSlope]:
+            lbl.setText("—")
+
+        if self.df is None:
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            return
+
+        x_series = self.df.get(x_name)
+        y_series = self.df.get(y_name)
+        if x_series is None or y_series is None:
+            return
+
+        if not (np.issubdtype(x_series.dtype, np.number) and
+                np.issubdtype(y_series.dtype, np.number)):
+            return
+
+        x = np.asarray(x_series.to_numpy(), dtype=float)
+        y = np.asarray(y_series.to_numpy(), dtype=float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+
+        if x.size < 2:
+            return
+
+        # --- 1) Coercivity from current loop ---
+        hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y)
+        if hc_plus is not None:
+            self.lblHcPlus.setText(f"{hc_plus:.4g}")
+        if hc_minus is not None:
+            self.lblHcMinus.setText(f"{hc_minus:.4g}")
+        if hc_avg is not None:
+            self.lblHc.setText(f"{hc_avg:.4g}")
+
+        # --- 2) Background slope and M_sat from the last BG operation ---
+        # Look backwards through history for the most recent BG op
+        last_bg = None
+        for entry in reversed(self.history):
+            if entry.get("op") == "bg_linear_branches":
+                params = entry.get("params", {})
+                if (params.get("x_column") == x_name and
+                        params.get("column") == y_name):
+                    last_bg = params
+                    break
+
+        if last_bg is None:
+            # No BG correction yet for this X/Y → leave Ms, BG slope as "—"
+            return
+
+        # Background slope m_bg
+        m_bg = last_bg.get("m_bg", None)
+        if m_bg is not None:
+            self.lblBgSlope.setText(f"{m_bg:.4g}")
+
+        # M_sat: from high-field intercepts of BG fits
+        b_pos = last_bg.get("b_pos", None)
+        b_neg = last_bg.get("b_neg", None)
+        if b_pos is not None and b_neg is not None:
+            # For a symmetric loop, M_sat ≈ (b_pos - b_neg) / 2
+            msat = 0.5 * (b_pos - b_neg)
+            self.lblMs.setText(f"{msat:.4g}")
 
     def _add_history_entry(self, op, params):
         """Append an operation to the history log."""
