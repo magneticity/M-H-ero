@@ -88,7 +88,7 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addWidget(self.autoRescaleChk)
 
         self.chkShowMarkers = QtWidgets.QCheckBox("Show markers")
-        self.chkShowMarkers.setChecked(True)   # default: ON
+        self.chkShowMarkers.setChecked(False)   # default: OFF
         h.addWidget(self.chkShowMarkers)
         self.chkShowMarkers.toggled.connect(self._replot)
 
@@ -105,7 +105,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Ready")
 
         # Physical parameters dock
-        self.paramDock = QtWidgets.QDockWidget("Physical Parameters", self)
+        self.paramDock = QtWidgets.QDockWidget("Loop Parameters", self)
         self.paramDock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
         )
@@ -717,13 +717,28 @@ class MainWindow(QtWidgets.QMainWindow):
             title_extra = (
                 f"  (m_bg={m_bg:.3g}, m+={m_pos:.3g}, m-={m_neg:.3g}, |H|≥{thr_abs:.3g})"
             )
+            # ---- Update parameter panel based on PREVIEW data ----
+            hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y_corr)
+            Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y_corr)
+            Ms = 0.5 * (b_pos - b_neg)
+
+            self._set_param_labels(
+                        hc_plus=hc_plus, hc_minus=hc_minus, hc_avg=hc_avg,
+                        Mr_plus=Mr_plus, Mr_minus=Mr_minus, Mr_mag=Mr_mag,
+                        Ms=Ms, m_bg=m_bg,
+                    )
+
         except Exception as e:
-            # If fit fails, just show raw loop and bail on extras
+            # If fit fails (e.g. silly threshold), just show raw loop and
+            # revert to parameters from committed data
             ax.plot(x, y, linewidth=1.5, alpha=0.6)
             ax.set_xlabel(xcol)
             ax.set_ylabel(ycol)
             ax.set_title(f"Preview: background subtraction (fit invalid: {e})")
             ax.grid(True, alpha=0.3)
+
+            # revert parameter panel to committed values
+            self._update_parameters()
             self.canvas.fig.canvas.draw_idle()
             return
 
@@ -770,7 +785,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.legend(loc="best")
 
         if self.chkShowMarkers.isChecked():
-            self._draw_feature_markers(x, y_corr)
+            self._draw_feature_markers(x, y_corr, bg_info=info, use_history_if_none=False)
 
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(
@@ -1117,69 +1132,61 @@ class MainWindow(QtWidgets.QMainWindow):
                     return params
         return None
 
-    def _draw_feature_markers(self, x, y):
+    def _draw_feature_markers(self, x, y, bg_info=None, use_history_if_none=True):
         """
-        Draw feature markers (Mr, Hc, etc.) on the current axes,
-        based on the given loop x, y.
-
-        Called only when the 'Show markers' checkbox is checked.
+        Draw feature markers (Mr, Hc, Ms, etc.) on the current axes.
+        If bg_info is provided, use that for Ms; otherwise optionally
+        fall back to the last BG operation in history.
         """
         ax = self.canvas.ax
 
         # --- Remanence markers (at H = 0) ---
         Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y)
-
         if Mr_plus is not None:
             ax.scatter([0.0], [Mr_plus], s=30, marker="o")
-            ax.annotate(
-                "Mr+",
-                xy=(0.0, Mr_plus),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=8,
-            )
+            ax.annotate("Mr+",
+                        xy=(0.0, Mr_plus),
+                        xytext=(5, 5),
+                        textcoords="offset points",
+                        fontsize=8)
 
         if Mr_minus is not None:
             ax.scatter([0.0], [Mr_minus], s=30, marker="o")
-            ax.annotate(
-                "Mr−",
-                xy=(0.0, Mr_minus),
-                xytext=(5, -10),
-                textcoords="offset points",
-                fontsize=8,
-            )
+            ax.annotate("Mr−",
+                        xy=(0.0, Mr_minus),
+                        xytext=(5, -10),
+                        textcoords="offset points",
+                        fontsize=8)
 
         # --- Coercivity markers (at M = 0) ---
         hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y)
-
         if hc_plus is not None:
             ax.scatter([hc_plus], [0.0], s=30, marker="s")
-            ax.annotate(
-                "Hc+",
-                xy=(hc_plus, 0.0),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=8,
-            )
+            ax.annotate("Hc+",
+                        xy=(hc_plus, 0.0),
+                        xytext=(5, 5),
+                        textcoords="offset points",
+                        fontsize=8)
 
         if hc_minus is not None:
             ax.scatter([hc_minus], [0.0], s=30, marker="s")
-            ax.annotate(
-                "Hc−",
-                xy=(hc_minus, 0.0),
-                xytext=(5, -10),
-                textcoords="offset points",
-                fontsize=8,
-            )
-         # --- Ms as dashed horizontal lines (only after BG correction) ---
-        last_bg = self._get_last_bg_info_for_current_axes()
+            ax.annotate("Hc−",
+                        xy=(hc_minus, 0.0),
+                        xytext=(5, -10),
+                        textcoords="offset points",
+                        fontsize=8)
+
+        # --- Ms horizontal line(s) (only if we have BG info) ---
+        last_bg = bg_info
+        if last_bg is None and use_history_if_none:
+            last_bg = self._get_last_bg_info_for_current_axes()
+
         if last_bg is not None:
             b_pos = last_bg.get("b_pos", None)
             b_neg = last_bg.get("b_neg", None)
             if b_pos is not None and b_neg is not None:
                 msat = 0.5 * (b_pos - b_neg)
 
-                # Compute x-range for the lines
                 x_arr = np.asarray(x, dtype=float)
                 x_finite = x_arr[np.isfinite(x_arr)]
                 if x_finite.size > 0:
@@ -1187,19 +1194,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     x_min, x_max = -1.0, 1.0
 
-                # Draw Ms lines (±Ms) as dashed horizontals
                 ax.hlines(msat, x_min, x_max, linestyles="--")
                 ax.hlines(-msat, x_min, x_max, linestyles="--")
+                ax.annotate("Ms",
+                            xy=(x_min, msat),
+                            xytext=(5, 5),
+                            textcoords="offset points",
+                            fontsize=8)
 
-                # Annotate the upper one
-                ax.annotate(
-                    "Ms",
-                    xy=(x_min, msat),
-                    xytext=(5, 5),
-                    textcoords="offset points",
-                    fontsize=8,
-                )
-        # Later: we can add H_sat, etc. here using the same pattern.
+    def _set_param_labels(self,
+                        hc_plus=None, hc_minus=None, hc_avg=None,
+                        Mr_plus=None, Mr_minus=None, Mr_mag=None,
+                        Ms=None, m_bg=None):
+        """Update the parameter panel labels, leaving None as '—'."""
+        def set_lbl(lbl, val):
+            lbl.setText("—" if val is None else f"{val:.4g}")
+
+        set_lbl(self.lblHcPlus, hc_plus)
+        set_lbl(self.lblHcMinus, hc_minus)
+        set_lbl(self.lblHc, hc_avg)
+
+        set_lbl(self.lblMrPlus, Mr_plus)
+        set_lbl(self.lblMrMinus, Mr_minus)
+        set_lbl(self.lblMr, Mr_mag)
+
+        set_lbl(self.lblMs, Ms)
+        set_lbl(self.lblBgSlope, m_bg)
 
 
     def _add_history_entry(self, op, params):
