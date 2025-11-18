@@ -99,7 +99,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = self.statusBar()
         self.status.showMessage("Ready")
 
-        # --- Physical parameters dock ---
+        # Physical parameters dock
         self.paramDock = QtWidgets.QDockWidget("Physical Parameters", self)
         self.paramDock.setAllowedAreas(
             QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
@@ -113,14 +113,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lblHc = QtWidgets.QLabel("—")
         self.lblHcPlus = QtWidgets.QLabel("—")
         self.lblHcMinus = QtWidgets.QLabel("—")
+
+        self.lblMr = QtWidgets.QLabel("—")
+        self.lblMrPlus = QtWidgets.QLabel("—")
+        self.lblMrMinus = QtWidgets.QLabel("—")
+
         self.lblMs = QtWidgets.QLabel("—")
         self.lblBgSlope = QtWidgets.QLabel("—")
 
         form.addRow("Hc (avg):", self.lblHc)
         form.addRow("Hc+:", self.lblHcPlus)
         form.addRow("Hc−:", self.lblHcMinus)
+
+        form.addRow("Mr (mag):", self.lblMr)
+        form.addRow("Mr+:", self.lblMrPlus)
+        form.addRow("Mr−:", self.lblMrMinus)
+
         form.addRow("M\u209B (sat):", self.lblMs)      # Mₛ
         form.addRow("BG slope:", self.lblBgSlope)
+
 
         self.paramDock.setWidget(panel)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.paramDock)
@@ -892,6 +903,108 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return hc_plus, hc_minus, hc_avg
 
+    def _compute_remanence(self, x, y, fallback_window_fraction=0.02):
+        """
+        Estimate remanent magnetisations using branch-specific interpolation
+        at H = 0.
+
+        Strategy:
+          - Scan consecutive points for sign changes in H (x).
+          - For each pair that brackets H = 0, linearly interpolate M at H = 0.
+          - Use dH = x[i+1] - x[i] to decide branch:
+                dH < 0  → descending branch (from +H to -H) → Mr+
+                dH > 0  → ascending branch (from -H to +H) → Mr−
+          - Mr (mag) ≈ (Mr+ - Mr−)/2 for a roughly symmetric loop.
+
+        If no zero-crossings are found, falls back to a simple |H| window
+        around 0 with width set by fallback_window_fraction.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+
+        if x.size < 2:
+            return None, None, None
+
+        # Ensure we actually span H = 0
+        if not (np.nanmin(x) <= 0.0 <= np.nanmax(x)):
+            # No zero field in range → nothing meaningful to do
+            return None, None, None
+
+        Mr_plus_candidates = []   # descending branch (dH < 0)
+        Mr_minus_candidates = []  # ascending branch (dH > 0)
+
+        for i in range(len(x) - 1):
+            x0, x1 = x[i], x[i + 1]
+            y0, y1 = y[i], y[i + 1]
+
+            # Skip degenerate segment
+            if not np.isfinite(x0) or not np.isfinite(x1):
+                continue
+            if x1 == x0:
+                continue
+
+            # Does this segment bracket H=0?
+            # (includes exact zeros and sign changes)
+            if x0 == 0.0:
+                x_zero = 0.0
+                y_zero = float(y0)
+            elif x1 == 0.0:
+                x_zero = 0.0
+                y_zero = float(y1)
+            elif x0 * x1 < 0.0:
+                # Linear interpolation to H=0
+                x_zero = 0.0
+                y_zero = float(y0 - x0 * (y1 - y0) / (x1 - x0))
+            else:
+                continue
+
+            dH = x1 - x0
+            if dH < 0:
+                Mr_plus_candidates.append(y_zero)   # descending branch (from +H)
+            elif dH > 0:
+                Mr_minus_candidates.append(y_zero)  # ascending branch (from -H)
+            # dH==0 already excluded above
+
+        Mr_plus = np.mean(Mr_plus_candidates) if Mr_plus_candidates else None
+        Mr_minus = np.mean(Mr_minus_candidates) if Mr_minus_candidates else None
+
+        # If for some reason we didn’t find both branches, fall back to window method
+        if Mr_plus is None or Mr_minus is None:
+            max_abs_H = np.nanmax(np.abs(x))
+            if max_abs_H > 0:
+                h_window = fallback_window_fraction * max_abs_H
+                mask = np.abs(x) <= h_window
+                if mask.sum() >= 2:
+                    y_window = y[mask]
+                    Mr_plus_fb = float(np.nanmax(y_window))
+                    Mr_minus_fb = float(np.nanmin(y_window))
+                    if Mr_plus is None:
+                        Mr_plus = Mr_plus_fb
+                    if Mr_minus is None:
+                        Mr_minus = Mr_minus_fb
+
+        if Mr_plus is None and Mr_minus is None:
+            return None, None, None
+
+        Mr_mag = None
+        if Mr_plus is not None and Mr_minus is not None:
+            Mr_mag = 0.5 * (Mr_plus - Mr_minus)
+        elif Mr_plus is not None:
+            Mr_mag = abs(Mr_plus)
+        elif Mr_minus is not None:
+            Mr_mag = abs(Mr_minus)
+
+        return (
+            float(Mr_plus) if Mr_plus is not None else None,
+            float(Mr_minus) if Mr_minus is not None else None,
+            float(Mr_mag) if Mr_mag is not None else None,
+        )
+
+
     def _update_parameters(self):
         """
         Recompute and display physical parameters for the selected
@@ -903,6 +1016,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         # Defaults when nothing is available
         for lbl in [self.lblHc, self.lblHcPlus, self.lblHcMinus,
+                    self.lblMr, self.lblMrPlus, self.lblMrMinus,
                     self.lblMs, self.lblBgSlope]:
             lbl.setText("—")
 
@@ -941,7 +1055,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if hc_avg is not None:
             self.lblHc.setText(f"{hc_avg:.4g}")
 
-        # --- 2) Background slope and M_sat from the last BG operation ---
+        # --- 2) Remanence from current loop ---
+        Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y)
+        if Mr_plus is not None:
+            self.lblMrPlus.setText(f"{Mr_plus:.4g}")
+        if Mr_minus is not None:
+            self.lblMrMinus.setText(f"{Mr_minus:.4g}")
+        if Mr_mag is not None:
+            self.lblMr.setText(f"{Mr_mag:.4g}")
+
+        # --- 3) Background slope and M_sat from the last BG operation ---
         # Look backwards through history for the most recent BG op
         last_bg = None
         for entry in reversed(self.history):
@@ -951,17 +1074,15 @@ class MainWindow(QtWidgets.QMainWindow):
                         params.get("column") == y_name):
                     last_bg = params
                     break
-
         if last_bg is None:
             # No BG correction yet for this X/Y → leave Ms, BG slope as "—"
             return
-
         # Background slope m_bg
         m_bg = last_bg.get("m_bg", None)
         if m_bg is not None:
             self.lblBgSlope.setText(f"{m_bg:.4g}")
 
-        # M_sat: from high-field intercepts of BG fits
+        # --- 4) M_sat: from high-field intercepts of BG fits
         b_pos = last_bg.get("b_pos", None)
         b_neg = last_bg.get("b_neg", None)
         if b_pos is not None and b_neg is not None:
