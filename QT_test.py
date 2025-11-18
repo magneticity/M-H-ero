@@ -90,7 +90,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chkShowMarkers = QtWidgets.QCheckBox("Show markers")
         self.chkShowMarkers.setChecked(False)   # default: OFF
         h.addWidget(self.chkShowMarkers)
-        self.chkShowMarkers.toggled.connect(self._replot)
+        self.chkShowMarkers.toggled.connect(self._on_markers_toggled)
+
 
         vbox.addWidget(controls)
 
@@ -143,37 +144,42 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Menu
         file_menu = self.menuBar().addMenu("&File")
-        open_act = QtGui.QAction("&Open…", self)
-        open_act.setShortcut("Ctrl+O")
-        open_act.triggered.connect(self.open_file)
-        file_menu.addAction(open_act)
+        file_menu = self.menuBar().addMenu("&File")
 
-        quit_act = QtGui.QAction("&Quit", self)
-        quit_act.setShortcut("Ctrl+Q")
-        quit_act.triggered.connect(self.close)
-        file_menu.addAction(quit_act)
+        self.openAct = QtGui.QAction("&Open…", self)
+        self.openAct.setShortcut("Ctrl+O")
+        self.openAct.triggered.connect(self.open_file)
+        file_menu.addAction(self.openAct)
+
+        self.quitAct = QtGui.QAction("&Quit", self)
+        self.quitAct.setShortcut("Ctrl+Q")
+        self.quitAct.triggered.connect(self.close)
+        file_menu.addAction(self.quitAct)
+
 
         process_menu = self.menuBar().addMenu("&Process")
 
-        center_y_act = QtGui.QAction("Center &Y about 0", self)
-        center_y_act.setShortcut("Ctrl+Y")
-        center_y_act.setStatusTip("Subtract mean of current Y column so it is centered at zero")
-        center_y_act.triggered.connect(self.center_y_about_zero)
-        process_menu.addAction(center_y_act)
-
-        bg_act = QtGui.QAction("Linear background (high field)…", self)
-        bg_act.setShortcut("Ctrl+B")
-        bg_act.setStatusTip("Fit a straight line to the high-field region and subtract it")
-        bg_act.triggered.connect(self._bg_start_mode)
-        process_menu.addAction(bg_act)
+        self.centerYAct = QtGui.QAction("Center &Y about 0", self)
+        self.centerYAct.setShortcut("Ctrl+Y")
+        self.centerYAct.setStatusTip("Subtract mean of current Y column so it is centered at zero")
+        self.centerYAct.triggered.connect(self.center_y_about_zero)
+        process_menu.addAction(self.centerYAct)
 
         process_menu.addSeparator()
 
-        undo_act = QtGui.QAction("&Undo last operation", self)
-        undo_act.setShortcut("Ctrl+Z")
-        undo_act.setStatusTip("Undo the last data correction")
-        undo_act.triggered.connect(self.undo_last_operation)
-        process_menu.addAction(undo_act)
+        self.bgAct = QtGui.QAction("Linear background (high field)…", self)
+        self.bgAct.setShortcut("Ctrl+B")
+        self.bgAct.setStatusTip("Fit a straight line to the high-field region and subtract it")
+        self.bgAct.triggered.connect(self._bg_start_mode)
+        process_menu.addAction(self.bgAct)
+
+        process_menu.addSeparator()
+
+        self.undoAct = QtGui.QAction("&Undo last operation", self)
+        self.undoAct.setShortcut("Ctrl+Z")
+        self.undoAct.setStatusTip("Undo the last data correction")
+        self.undoAct.triggered.connect(self.undo_last_operation)
+        process_menu.addAction(self.undoAct)
 
         export_menu = self.menuBar().addMenu("&Export")
         export_hist_act = QtGui.QAction("Export &History…", self)
@@ -256,7 +262,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._wiring_done:
             self.xCombo.currentIndexChanged.connect(self._replot)
             self.yCombo.currentIndexChanged.connect(self._replot)
-            self.autoRescaleChk.toggled.connect(self._replot)
+            self.autoRescaleChk.toggled.connect(self._on_autorescale_toggled)
             self._wiring_done = True
     
     # ---------- History export ----------
@@ -332,6 +338,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
         self._update_parameters()
+
+    def _on_markers_toggled(self, checked):
+        # If we’re in background preview mode, redraw the preview;
+        # otherwise, just replot the committed data.
+        if self.bg_mode_active:
+            self._bg_update_preview()
+        else:
+            self._replot()
+
+    def _on_autorescale_toggled(self, checked):
+        if self.bg_mode_active:
+            self._bg_update_preview()
+        else:
+            self._replot()
 
     def _swap_axes(self):
         if self.xCombo.count() == 0 or self.yCombo.count() == 0:
@@ -644,6 +664,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bg_mode_active = True
         self.bgApplyBtn.setVisible(True)
         self.bgCancelBtn.setVisible(True)
+
+        # Disable other loop-editing controls while in BG mode
+        self._set_bg_blocked_enabled(False)
+
         self.status.showMessage("Background mode: drag the vertical line to set high-field threshold, then click 'Apply BG'.")
 
         # Create vertical line
@@ -874,6 +898,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             self._bg_vline = None
 
+        self._set_bg_blocked_enabled(True)
+
+    def _set_bg_blocked_enabled(self, enabled: bool):
+        """
+        Enable/disable controls that shouldn't be usable while background
+        preview mode is active (y-offset, undo, axis swap, X/Y selection, etc.).
+        """
+        # Actions that modify data or history
+        for act in [
+            getattr(self, "centerYAct", None),
+            getattr(self, "undoAct", None),
+            getattr(self, "bgAct", None),         # no nested BG inside BG mode
+            getattr(self, "openAct", None),       # optional: block changing file mid-preview
+            # getattr(self, "exportHistAct", None),  # if you have one
+        ]:
+            if act is not None:
+                act.setEnabled(enabled)
+
+        # Widgets that affect axes / columns directly
+        for w in [
+            getattr(self, "swapBtn", None),
+            getattr(self, "xCombo", None),
+            getattr(self, "yCombo", None),
+        ]:
+            if w is not None:
+                w.setEnabled(enabled)
 
     def _compute_coercivity(self, x, y):
         """
