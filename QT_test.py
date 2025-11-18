@@ -87,6 +87,11 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addStretch(1)
         h.addWidget(self.autoRescaleChk)
 
+        self.chkShowMarkers = QtWidgets.QCheckBox("Show markers")
+        self.chkShowMarkers.setChecked(True)   # default: ON
+        h.addWidget(self.chkShowMarkers)
+        self.chkShowMarkers.toggled.connect(self._replot)
+
         vbox.addWidget(controls)
 
         # Plot area
@@ -314,6 +319,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.autoRescaleChk.isChecked():
             self.canvas.ax.relim()
             self.canvas.ax.autoscale()
+
+                # Draw markers if enabled
+        if self.chkShowMarkers.isChecked():
+            self._draw_feature_markers(x, y)
+
+        self.canvas.fig.canvas.draw_idle()
+        self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
+        
+        self._update_parameters()
 
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
@@ -755,6 +769,9 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best")
 
+        if self.chkShowMarkers.isChecked():
+            self._draw_feature_markers(x, y_corr)
+
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(
             f"Background mode: |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply BG'"
@@ -1065,15 +1082,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lblMr.setText(f"{Mr_mag:.4g}")
 
         # --- 3) Background slope and M_sat from the last BG operation ---
-        # Look backwards through history for the most recent BG op
-        last_bg = None
-        for entry in reversed(self.history):
-            if entry.get("op") == "bg_linear_branches":
-                params = entry.get("params", {})
-                if (params.get("x_column") == x_name and
-                        params.get("column") == y_name):
-                    last_bg = params
-                    break
+        last_bg = self._get_last_bg_info_for_current_axes()
         if last_bg is None:
             # No BG correction yet for this X/Y → leave Ms, BG slope as "—"
             return
@@ -1089,6 +1098,109 @@ class MainWindow(QtWidgets.QMainWindow):
             # For a symmetric loop, M_sat ≈ (b_pos - b_neg) / 2
             msat = 0.5 * (b_pos - b_neg)
             self.lblMs.setText(f"{msat:.4g}")
+
+    def _get_last_bg_info_for_current_axes(self):
+        """
+        Find the most recent bg_linear_branches operation that matches
+        the currently selected X/Y columns. Returns its params dict or None.
+        """
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            return None
+
+        for entry in reversed(self.history):
+            if entry.get("op") == "bg_linear_branches":
+                params = entry.get("params", {})
+                if (params.get("x_column") == x_name and
+                        params.get("column") == y_name):
+                    return params
+        return None
+
+    def _draw_feature_markers(self, x, y):
+        """
+        Draw feature markers (Mr, Hc, etc.) on the current axes,
+        based on the given loop x, y.
+
+        Called only when the 'Show markers' checkbox is checked.
+        """
+        ax = self.canvas.ax
+
+        # --- Remanence markers (at H = 0) ---
+        Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y)
+
+        if Mr_plus is not None:
+            ax.scatter([0.0], [Mr_plus], s=30, marker="o")
+            ax.annotate(
+                "Mr+",
+                xy=(0.0, Mr_plus),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+            )
+
+        if Mr_minus is not None:
+            ax.scatter([0.0], [Mr_minus], s=30, marker="o")
+            ax.annotate(
+                "Mr−",
+                xy=(0.0, Mr_minus),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=8,
+            )
+
+        # --- Coercivity markers (at M = 0) ---
+        hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y)
+
+        if hc_plus is not None:
+            ax.scatter([hc_plus], [0.0], s=30, marker="s")
+            ax.annotate(
+                "Hc+",
+                xy=(hc_plus, 0.0),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+            )
+
+        if hc_minus is not None:
+            ax.scatter([hc_minus], [0.0], s=30, marker="s")
+            ax.annotate(
+                "Hc−",
+                xy=(hc_minus, 0.0),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=8,
+            )
+         # --- Ms as dashed horizontal lines (only after BG correction) ---
+        last_bg = self._get_last_bg_info_for_current_axes()
+        if last_bg is not None:
+            b_pos = last_bg.get("b_pos", None)
+            b_neg = last_bg.get("b_neg", None)
+            if b_pos is not None and b_neg is not None:
+                msat = 0.5 * (b_pos - b_neg)
+
+                # Compute x-range for the lines
+                x_arr = np.asarray(x, dtype=float)
+                x_finite = x_arr[np.isfinite(x_arr)]
+                if x_finite.size > 0:
+                    x_min, x_max = x_finite.min(), x_finite.max()
+                else:
+                    x_min, x_max = -1.0, 1.0
+
+                # Draw Ms lines (±Ms) as dashed horizontals
+                ax.hlines(msat, x_min, x_max, linestyles="--")
+                ax.hlines(-msat, x_min, x_max, linestyles="--")
+
+                # Annotate the upper one
+                ax.annotate(
+                    "Ms",
+                    xy=(x_min, msat),
+                    xytext=(5, 5),
+                    textcoords="offset points",
+                    fontsize=8,
+                )
+        # Later: we can add H_sat, etc. here using the same pattern.
+
 
     def _add_history_entry(self, op, params):
         """Append an operation to the history log."""
