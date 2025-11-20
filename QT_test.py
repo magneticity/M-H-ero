@@ -29,6 +29,82 @@ class PlotCanvas(FigureCanvas):
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
 
+class UnitConversionDialog(QtWidgets.QDialog):
+    """
+    Simple dialog to choose unit systems and which axes to convert.
+
+    For now we assume:
+      - X axis is magnetic field H
+      - Y axis is magnetisation M
+
+    Systems offered: SI, cgs-emu/Gaussian, cgs-esu, Heaviside-Lorentz.
+    Only SI <-> cgs-emu/Gaussian is implemented so far.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Convert units")
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        # System choices
+        self.fromCombo = QtWidgets.QComboBox()
+        self.toCombo = QtWidgets.QComboBox()
+        systems = ["SI", "cgs-emu/Gaussian", "cgs-esu", "Heaviside-Lorentz"]
+        self.fromCombo.addItems(systems)
+        self.toCombo.addItems(systems)
+
+        form.addRow("Current system:", self.fromCombo)
+        form.addRow("Target system:", self.toCombo)
+
+        # Axis meanings
+        axis_form = QtWidgets.QFormLayout()
+        layout.addLayout(axis_form)
+
+        self.xTypeCombo = QtWidgets.QComboBox()
+        self.xTypeCombo.addItems(["Field H", "Flux density B"])
+        self.yTypeCombo = QtWidgets.QComboBox()
+        self.yTypeCombo.addItems(["Magnetisation M", "Magnetic moment m"])
+
+        axis_form.addRow("X axis represents:", self.xTypeCombo)
+        axis_form.addRow("Y axis represents:", self.yTypeCombo)
+
+        # What to convert
+        self.chkConvertField = QtWidgets.QCheckBox("Convert X axis (field H)")
+        self.chkConvertMag = QtWidgets.QCheckBox("Convert Y axis (magnetisation M)")
+        self.chkConvertField.setChecked(True)
+        self.chkConvertMag.setChecked(True)
+
+        layout.addWidget(self.chkConvertField)
+        layout.addWidget(self.chkConvertMag)
+
+        # Buttons
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self):
+        """
+        Return:
+          (from_system, to_system,
+           convert_x, x_type_str,
+           convert_y, y_type_str)
+        """
+        return (
+            self.fromCombo.currentText(),
+            self.toCombo.currentText(),
+            self.chkConvertField.isChecked(),
+            self.xTypeCombo.currentText(),
+            self.chkConvertMag.isChecked(),
+            self.yTypeCombo.currentText(),
+        )
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -201,6 +277,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.driftLoopAct.setStatusTip("Estimate drift so that first and last points coincide")
         self.driftLoopAct.triggered.connect(self._drift_linear_loopclosure_apply)
         process_menu.addAction(self.driftLoopAct)
+
+        self.unitConvertAct = QtGui.QAction("Convert &units", self)
+        self.unitConvertAct.setStatusTip(
+            "Convert current field/magnetisation between SI and cgs/Gaussian units"
+        )
+        self.unitConvertAct.triggered.connect(self._open_unit_convert_dialog)
+        process_menu.addAction(self.unitConvertAct)
 
         process_menu.addSeparator()
 
@@ -682,6 +765,56 @@ class MainWindow(QtWidgets.QMainWindow):
 
                 self._add_history_entry("drift_linear_tails", new_params)
 
+        elif op == "unit_convert":
+            from_sys = params.get("from_system")
+            to_sys = params.get("to_system")
+            field_col = params.get("field_column")
+            mag_col = params.get("mag_column")
+
+            # Legacy factors (if present in history)
+            field_factor_param = params.get("field_factor", None)
+            mag_factor_param = params.get("mag_factor", None)
+
+            # Axis quantities for new entries
+            field_q = params.get("field_quantity", None)
+            mag_q = params.get("mag_quantity", None)
+
+            # Determine factors
+            if not record and (field_factor_param is not None or mag_factor_param is not None):
+                # Replaying an existing entry that already stored its factors
+                field_factor = field_factor_param if field_factor_param is not None else 1.0
+                mag_factor = mag_factor_param if mag_factor_param is not None else 1.0
+            else:
+                # Compute from systems + quantities (new-style)
+                field_factor, mag_factor = self._unit_conversion_factors_axes(
+                    from_sys, to_sys, field_q, mag_q
+                )
+
+            # Apply to df
+            if field_col is not None and field_col in self.df.columns:
+                s = self.df[field_col]
+                if np.issubdtype(s.dtype, np.number):
+                    self.df[field_col] = np.asarray(s.to_numpy(), float) * field_factor
+
+            if mag_col is not None and mag_col in self.df.columns:
+                s = self.df[mag_col]
+                if np.issubdtype(s.dtype, np.number):
+                    self.df[mag_col] = np.asarray(s.to_numpy(), float) * mag_factor
+
+            if record:
+                self._add_history_entry(
+                    "unit_convert",
+                    {
+                        "from_system": from_sys,
+                        "to_system": to_sys,
+                        "field_column": field_col,
+                        "mag_column": mag_col,
+                        "field_quantity": field_q,
+                        "mag_quantity": mag_q,
+                        "field_factor": float(field_factor),
+                        "mag_factor": float(mag_factor),
+                    },
+                )
 
         # --- Loop-closure drift ---
         elif op == "drift_linear_loopclosure":
@@ -1537,6 +1670,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "exportLoopAct", None), 
             getattr(self, "copyLoopAct", None),
             getattr(self, "exportHistAct", None), 
+            getattr(self, "unitConvertAct", None),
         ]:
             if act is not None:
                 act.setEnabled(enabled)
@@ -1759,7 +1893,38 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return Hs_plus, Hs_minus, Hs_mag
 
+    def _unit_conversion_factors(self, from_sys, to_sys):
+        """
+        Return (field_factor, mag_factor) for H and M when converting
+        between unit systems.
 
+        - Field H: SI uses A/m, cgs-emu/Gaussian uses Oe.
+          1 Oe = 1000 / (4π) A/m  => 1 A/m = 4π/1000 Oe
+
+        - Magnetisation M: SI uses A/m, cgs-emu uses emu/cm^3.
+          1 emu/cm^3 = 1000 A/m  => 1 A/m = 1e-3 emu/cm^3
+        """
+        if from_sys == to_sys:
+            return 1.0, 1.0
+
+        if from_sys == "SI" and to_sys == "cgs-emu/Gaussian":
+            # SI → cgs
+            four_pi = 4.0 * np.pi
+            field_factor = four_pi / 1000.0      # A/m → Oe
+            mag_factor = 1.0e-3                  # A/m → emu/cm^3
+            return field_factor, mag_factor
+
+        if from_sys == "cgs-emu/Gaussian" and to_sys == "SI":
+            four_pi = 4.0 * np.pi
+            field_factor = 1000.0 / four_pi      # Oe → A/m
+            mag_factor = 1.0e3                   # emu/cm^3 → A/m
+            return field_factor, mag_factor
+
+        # For now, other systems are not implemented
+        raise ValueError(
+            f"Unit conversion between '{from_sys}' and '{to_sys}' "
+            "is not implemented yet."
+        )
 
 
     def _update_parameters(self):
@@ -1837,19 +2002,19 @@ class MainWindow(QtWidgets.QMainWindow):
         b_neg = last_bg.get("b_neg", None)
         if b_pos is not None and b_neg is not None:
             # For a symmetric loop, M_sat ≈ (b_pos - b_neg) / 2
-            msat = 0.5 * (b_pos - b_neg)
-            self.lblMs.setText(f"{msat:.4g}")
+            Ms = 0.5 * (b_pos - b_neg)
+            self.lblMs.setText(f"{Ms:.4g}")
 
         # --- 5) Saturation field from Ms and current loop (only if Ms known) ---
         last_bg = self._get_last_bg_info_for_current_axes()
         if last_bg is None:
             return
 
-        if last_bg is not None and msat is not None:
-            noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, msat)
+        if last_bg is not None and Ms is not None:
+            noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, Ms)
             if noise_std is not None:
                 Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
-                    x, y, msat, noise_std, k=2
+                    x, y, Ms, noise_std, k=2
                 )
             if Hs_plus is not None:
                 self.lblHsPlus.setText(f"{Hs_plus:.4g}")
@@ -1872,23 +2037,74 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lblHsMinus.setText("—")
 
 
-    def _get_last_bg_info_for_current_axes(self):
+    def _get_last_bg_info_for_current_axes(self, scaled=True):
         """
         Find the most recent bg_linear_branches operation that matches
-        the currently selected X/Y columns. Returns its params dict or None.
+        the currently selected X/Y columns.
+
+        If scaled=True, return a COPY of its params with threshold and
+        magnetisation-related values scaled into the *current* units,
+        taking into account any unit_convert operations that occurred
+        AFTER the BG fit.
+
+        If scaled=False, return the raw params dict stored in history.
         """
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
         if not x_name or not y_name:
             return None
 
-        for entry in reversed(self.history):
+        if not self.history:
+            return None
+
+        last_idx = None
+        last_raw = None
+
+        for i, entry in enumerate(self.history):
             if entry.get("op") == "bg_linear_branches":
                 params = entry.get("params", {})
                 if (params.get("x_column") == x_name and
                         params.get("column") == y_name):
-                    return params
-        return None
+                    last_idx = i
+                    last_raw = params
+
+        if last_raw is None:
+            return None
+        if not scaled:
+            return last_raw
+
+        # Compute net unit conversion factors applied AFTER this BG op
+        field_factor = 1.0
+        mag_factor = 1.0
+
+        for entry in self.history[last_idx + 1:]:
+            if entry.get("op") != "unit_convert":
+                continue
+            p = entry.get("params", {})
+            # Use stored factors from that op
+            f_fac = p.get("field_factor", None)
+            m_fac = p.get("mag_factor", None)
+
+            # Only apply if that conversion touched our current axes
+            if p.get("field_column") == x_name and f_fac is not None:
+                field_factor *= float(f_fac)
+            if p.get("mag_column") == y_name and m_fac is not None:
+                mag_factor *= float(m_fac)
+
+        # Build a scaled copy
+        scaled_params = dict(last_raw)  # shallow copy is fine since values are scalars
+
+        # threshold is in field units
+        if "threshold" in scaled_params and scaled_params["threshold"] is not None:
+            scaled_params["threshold"] = scaled_params["threshold"] * field_factor
+
+        # M-related params (Ms etc.) are in mag units
+        for key in ("m_bg", "m_pos", "m_neg", "b_pos", "b_neg"):
+            if key in scaled_params and scaled_params[key] is not None:
+                scaled_params[key] = scaled_params[key] * mag_factor
+
+        return scaled_params
+
 
     def _estimate_noise_from_bg_tails(self, x, y, last_bg, Ms):
         """
@@ -1934,83 +2150,299 @@ class MainWindow(QtWidgets.QMainWindow):
         noise_std = float(np.nanstd(all_res))
         return noise_std
 
+    def _open_unit_convert_dialog(self):
+        """Open the unit conversion dialog and apply conversion if accepted."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before converting units.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(
+                self, "Select columns",
+                "Select X and Y columns before converting units."
+            )
+            return
+
+        dlg = UnitConversionDialog(self)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        (from_sys, to_sys,
+        convert_x, x_type_str,
+        convert_y, y_type_str) = dlg.get_selection()
+
+        if from_sys == to_sys:
+            self.status.showMessage("Unit conversion: source and target systems are the same.")
+            return
+
+        # For now, only implement SI <-> cgs-emu/Gaussian
+        impl_sys = {"SI", "cgs-emu/Gaussian"}
+        if from_sys not in impl_sys or to_sys not in impl_sys:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Not implemented",
+                (
+                    "Unit conversion is currently implemented only between "
+                    "SI and cgs-emu/Gaussian for H, B, M, and m.\n\n"
+                    "Other systems (cgs-esu, Heaviside-Lorentz) are not yet supported."
+                ),
+            )
+            return
+
+        if not convert_x and not convert_y:
+            QtWidgets.QMessageBox.warning(
+                self, "Nothing to convert",
+                "Please select at least one of 'Convert X' or 'Convert Y'."
+            )
+            return
+
+        # Map UI strings → quantity codes
+        x_q = None
+        y_q = None
+        if convert_x:
+            if x_type_str == "Field H":
+                x_q = "H"
+            elif x_type_str == "Flux density B":
+                x_q = "B"
+
+        if convert_y:
+            if y_type_str == "Magnetisation M":
+                y_q = "M"
+            elif y_type_str == "Magnetic moment m":
+                y_q = "m"
+
+        params = {
+            "from_system": from_sys,
+            "to_system": to_sys,
+            "field_column": x_name if convert_x else None,
+            "mag_column": y_name if convert_y else None,
+            "field_quantity": x_q,
+            "mag_quantity": y_q,
+        }
+
+        try:
+            self._apply_operation("unit_convert", params, record=True)
+            self.status.showMessage(
+                f"Converted units: {from_sys} → {to_sys} "
+                f"(X: {x_q or '-'}, Y: {y_q or '-'})"
+            )
+            self._replot()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Unit conversion error", str(e))
+
+    def _unit_conversion_factor_for_quantity(self, quantity, from_sys, to_sys):
+        """
+        Return multiplicative factor for a given physical quantity when
+        converting values from from_sys → to_sys.
+
+        Supported systems: SI <-> cgs-emu/Gaussian
+        Quantities:
+          H : magnetic field strength
+          B : flux density
+          M : magnetisation
+          m : magnetic moment
+        """
+        if quantity is None or from_sys == to_sys:
+            return 1.0
+
+        # SI → cgs-emu/Gaussian
+        if from_sys == "SI" and to_sys == "cgs-emu/Gaussian":
+            if quantity == "H":
+                # H: A/m → Oe
+                # 1 Oe = 1000/(4π) A/m  → 1 A/m = 4π/1000 Oe
+                return 4.0 * np.pi / 1000.0
+            elif quantity == "B":
+                # B: Tesla → Gauss
+                # 1 T = 10^4 G
+                return 1.0e4
+            elif quantity == "M":
+                # M: A/m → emu/cm^3
+                # 1 emu/cm^3 = 1000 A/m → 1 A/m = 1e-3 emu/cm^3
+                return 1.0e-3
+            elif quantity == "m":
+                # m: A·m^2 → emu
+                # 1 emu = 1e-3 A·m^2 → 1 A·m^2 = 1e3 emu
+                return 1.0e3
+
+        # cgs-emu/Gaussian → SI
+        if from_sys == "cgs-emu/Gaussian" and to_sys == "SI":
+            if quantity == "H":
+                # Oe → A/m
+                return 1000.0 / (4.0 * np.pi)
+            elif quantity == "B":
+                # Gauss → Tesla
+                return 1.0e-4
+            elif quantity == "M":
+                # emu/cm^3 → A/m
+                return 1.0e3
+            elif quantity == "m":
+                # emu → A·m^2
+                return 1.0e-3
+
+        # Anything else not implemented yet
+        raise ValueError(
+            f"Unit conversion for quantity '{quantity}' between '{from_sys}' "
+            f"and '{to_sys}' is not implemented."
+        )
+
+    def _unit_conversion_factors_axes(self, from_sys, to_sys, field_quantity, mag_quantity):
+        """
+        Convenience: get factors for the X axis ('field_column') and
+        Y axis ('mag_column') given their physical meanings.
+        """
+        field_factor = self._unit_conversion_factor_for_quantity(field_quantity, from_sys, to_sys) \
+            if field_quantity is not None else 1.0
+        mag_factor = self._unit_conversion_factor_for_quantity(mag_quantity, from_sys, to_sys) \
+            if mag_quantity is not None else 1.0
+        return field_factor, mag_factor
 
 
     def _draw_feature_markers(self, x, y, bg_info=None, use_history_if_none=True):
         """
-        Draw feature markers (Mr, Hc, Ms, etc.) on the current axes.
-        If bg_info is provided, use that for Ms; otherwise optionally
-        fall back to the last BG operation in history.
+        Draw feature markers (Mr, Hc, Ms, Hs, etc.) on the current axes.
+
+        - x, y: arrays for the currently plotted loop (committed or preview)
+        - bg_info: optional BG info dict for this specific loop (e.g. preview)
+        - use_history_if_none: if True and bg_info is None, fall back to the
+        most recent bg_linear_branches op from history for the current axes.
         """
         ax = self.canvas.ax
 
-        # --- Remanence markers (at H = 0) ---
+        # Make sure we work only with finite points
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+        if x.size < 2:
+            return
+
+        # 1) Remanence markers
         Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y)
+
         if Mr_plus is not None:
             ax.scatter([0.0], [Mr_plus], s=30, marker="o")
-            ax.annotate("Mr+",
-                        xy=(0.0, Mr_plus),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=8)
+            ax.annotate(
+                "Mr+",
+                xy=(0.0, Mr_plus),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+            )
 
         if Mr_minus is not None:
             ax.scatter([0.0], [Mr_minus], s=30, marker="o")
-            ax.annotate("Mr−",
-                        xy=(0.0, Mr_minus),
-                        xytext=(5, -10),
-                        textcoords="offset points",
-                        fontsize=8)
+            ax.annotate(
+                "Mr−",
+                xy=(0.0, Mr_minus),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=8,
+            )
 
-        # --- Coercivity markers (at M = 0) ---
+        # 2) Coercivity markers
         hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y)
+
         if hc_plus is not None:
             ax.scatter([hc_plus], [0.0], s=30, marker="s")
-            ax.annotate("Hc+",
-                        xy=(hc_plus, 0.0),
-                        xytext=(5, 5),
-                        textcoords="offset points",
-                        fontsize=8)
+            ax.annotate(
+                "Hc+",
+                xy=(hc_plus, 0.0),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+            )
 
         if hc_minus is not None:
             ax.scatter([hc_minus], [0.0], s=30, marker="s")
-            ax.annotate("Hc−",
-                        xy=(hc_minus, 0.0),
-                        xytext=(5, -10),
-                        textcoords="offset points",
-                        fontsize=8)
+            ax.annotate(
+                "Hc−",
+                xy=(hc_minus, 0.0),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=8,
+            )
 
-        # --- Ms horizontal line(s) (only if we have BG info) ---
+        # 3) Ms & Hs (only if BG info exists)
+        Ms = None  
+
         last_bg = bg_info
         if last_bg is None and use_history_if_none:
+            # This returns a *scaled* copy of the last BG info in current units
             last_bg = self._get_last_bg_info_for_current_axes()
 
-        if last_bg is not None:
-            b_pos = last_bg.get("b_pos", None)
-            b_neg = last_bg.get("b_neg", None)
-            if b_pos is not None and b_neg is not None:
-                msat = 0.5 * (b_pos - b_neg)
+        if last_bg is None:
+            # No BG fit: nothing more to draw (Mr/Hc only)
+            return
 
-                x_arr = np.asarray(x, dtype=float)
-                x_finite = x_arr[np.isfinite(x_arr)]
-                if x_finite.size > 0:
-                    x_min, x_max = x_finite.min(), x_finite.max()
-                else:
-                    x_min, x_max = -1.0, 1.0
+        # Compute Ms from BG intercepts
+        b_pos = last_bg.get("b_pos", None)
+        b_neg = last_bg.get("b_neg", None)
+        if b_pos is None or b_neg is None:
+            # BG exists but missing intercepts → can't define Ms sensibly
+            return
 
-                ax.hlines(msat, x_min, x_max, linestyles="--")
-                ax.hlines(-msat, x_min, x_max, linestyles="--")
-                ax.annotate("Ms",
-                            xy=(x_min, msat),
-                            xytext=(5, 5),
-                            textcoords="offset points",
-                            fontsize=8)
+        Ms = 0.5 * (b_pos - b_neg)
+
+        # If Ms is NaN or not finite, bail out of Ms/Hs part
+        if not np.isfinite(Ms):
+            return
+
+        # --- Ms horizontal lines ---
+        x_min, x_max = float(x.min()), float(x.max())
+        ax.hlines(Ms,  x_min, x_max, linestyles="--")
+        ax.hlines(-Ms, x_min, x_max, linestyles="--")
+        ax.annotate(
+            "Ms",
+            xy=(x_min, Ms),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=8,
+        )
+
+        # --- Hs vertical lines (noise-based) ---
+        # Need noise estimate from BG tails; function should safely return None
+        noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, Ms)
+        if noise_std is None or not np.isfinite(noise_std) or noise_std <= 0:
+            return
+
+        Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
+            x, y, Ms, noise_std, k=3
+        )
+
+        if Hs_plus is None and Hs_minus is None:
+            return
+
+        y_min, y_max = float(y.min()), float(y.max())
+
+        if Hs_plus is not None and np.isfinite(Hs_plus):
+            ax.vlines(Hs_plus, y_min, y_max, linestyles="--")
+            ax.annotate(
+                "Hs+",
+                xy=(Hs_plus, y_max),
+                xytext=(3, -15),
+                textcoords="offset points",
+                fontsize=8,
+            )
+
+        if Hs_minus is not None and np.isfinite(Hs_minus):
+            ax.vlines(Hs_minus, y_min, y_max, linestyles="--")
+            ax.annotate(
+                "Hs−",
+                xy=(Hs_minus, y_max),
+                xytext=(3, -15),
+                textcoords="offset points",
+                fontsize=8,
+            )
+
 
     # --- Hs vertical markers (noise-based) ---
-        noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, msat)
+        noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, Ms)
         if noise_std is not None and noise_std > 0:
             Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
-                x, y, msat, noise_std, k=3
+                x, y, Ms, noise_std, k=3
             )
 
             y_min, y_max = float(y.min()), float(y.max())
