@@ -73,11 +73,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bg_x_col = None
         self._bg_y_col = None
         self._bg_threshold = None
-
         self._bg_vline = None
         self._bg_cid_press = None
         self._bg_cid_motion = None
         self._bg_cid_release = None
+
+        # Drift tails interactive mode state
+        self.drift_mode_active = False
+        self._drift_df_before = None
+        self._drift_x_col = None
+        self._drift_y_col = None
+        self._drift_threshold = None
+        self._drift_vline = None
+        self._drift_cid_press = None
+        self._drift_cid_motion = None
+        self._drift_cid_release = None
+        self._drift_dragging = False
 
         h.addWidget(QtWidgets.QLabel("X:"))
         h.addWidget(self.xCombo, 1)
@@ -156,7 +167,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.quitAct.triggered.connect(self.close)
         file_menu.addAction(self.quitAct)
 
-
         process_menu = self.menuBar().addMenu("&Process")
 
         self.centerYAct = QtGui.QAction("Center &Y about 0", self)
@@ -164,14 +174,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.centerYAct.setStatusTip("Subtract mean of current Y column so it is centered at zero")
         self.centerYAct.triggered.connect(self.center_y_about_zero)
         process_menu.addAction(self.centerYAct)
-
-        process_menu.addSeparator()
-
+    
         self.bgAct = QtGui.QAction("Linear background (high field)…", self)
         self.bgAct.setShortcut("Ctrl+B")
         self.bgAct.setStatusTip("Fit a straight line to the high-field region and subtract it")
         self.bgAct.triggered.connect(self._bg_start_mode)
         process_menu.addAction(self.bgAct)
+
+        # --- Drift corrections ---
+        self.driftTailsAct = QtGui.QAction("Linear drift (high-field tails)", self)
+        self.driftTailsAct.setStatusTip("Estimate drift from high-field tails using equally-spaced time")
+        self.driftTailsAct.setShortcut("Ctrl+D")
+        self.driftTailsAct.triggered.disconnect()
+        self.driftTailsAct.triggered.connect(self._drift_start_tails_mode)
+        process_menu.addAction(self.driftTailsAct)
+
+        self.driftLoopAct = QtGui.QAction("Linear drift (loop closure)", self)
+        self.driftLoopAct.setStatusTip("Estimate drift so that first and last points coincide")
+        self.driftLoopAct.triggered.connect(self._drift_linear_loopclosure_apply)
+        process_menu.addAction(self.driftLoopAct)
 
         process_menu.addSeparator()
 
@@ -344,12 +365,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # otherwise, just replot the committed data.
         if self.bg_mode_active:
             self._bg_update_preview()
+        elif self.drift_mode_active:
+            self._drift_update_preview()
         else:
             self._replot()
 
     def _on_autorescale_toggled(self, checked):
         if self.bg_mode_active:
             self._bg_update_preview()
+        elif self.drift_mode_active:
+            self._drift_update_preview()
         else:
             self._replot()
 
@@ -544,6 +569,160 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if record:
                 self._add_history_entry("bg_linear_branches", params)
+                
+        elif op == "drift_linear_tails":
+            ycol = params.get("column")
+            xcol = params.get("x_column")
+            if ycol not in self.df.columns:
+                return
+
+            y_series = self.df[ycol]
+            if not np.issubdtype(y_series.dtype, np.number):
+                return
+
+            y = np.asarray(y_series.to_numpy(), dtype=float)
+            n = len(y)
+            if n < 2:
+                return
+
+            idx = np.arange(n, dtype=float)
+            finite_y = np.isfinite(y)
+            if finite_y.sum() < 2:
+                return
+
+            # Decide reference mask from high-field tails
+            mask_ref = finite_y.copy()
+
+            if xcol is not None and xcol in self.df.columns:
+                x_series = self.df[xcol]
+                if np.issubdtype(x_series.dtype, np.number):
+                    x = np.asarray(x_series.to_numpy(), dtype=float)
+                    finite_xy = finite_y & np.isfinite(x)
+
+                    if finite_xy.any():
+                        x_abs = np.abs(x[finite_xy])
+                        Hmax = np.nanmax(x_abs) if x_abs.size else 0.0
+
+                        # Prefer explicit threshold if provided
+                        thr_param = params.get("threshold", None)
+                        frac_param = params.get("ref_abs_fraction", None)
+
+                        if thr_param is not None:
+                            thr = float(thr_param)
+                        else:
+                            # Use fraction of max|H|, with a sensible default if None
+                            frac = 0.8 if frac_param is None else float(frac_param)
+                            thr = frac * Hmax if Hmax > 0 else 0.0
+
+                        tmp = np.zeros_like(mask_ref)
+                        tmp[finite_xy] = np.abs(x[finite_xy]) >= thr
+                        mask_ref = tmp
+
+            mask_ref = mask_ref & finite_y
+
+            if mask_ref.sum() < 2:
+                raise ValueError("Not enough reference points in high-field tails to estimate drift.")
+
+            idx_ref = idx[mask_ref]
+            y_ref = y[mask_ref]
+
+            if np.allclose(idx_ref, idx_ref[0]):
+                raise ValueError("Reference indices are degenerate; cannot fit drift.")
+
+            # Use stored slope if available (for reproducible replay), else compute
+            if "drift_slope" in params:
+                slope = float(params["drift_slope"])
+            else:
+                slope, intercept = np.polyfit(idx_ref, y_ref, 1)
+                if record:
+                    params["drift_slope"] = float(slope)
+
+            idx_center = idx_ref.mean()
+            y_corr = y - slope * (idx - idx_center)
+
+            self.df[ycol] = y_corr
+
+            if record:
+                # Normalise what we store so future replays don't hit this issue again
+                new_params = {
+                    "x_column": xcol,
+                    "column": ycol,
+                    "drift_slope": float(slope),
+                }
+                # If we used an explicit threshold, keep it; otherwise store fraction
+                thr_param = params.get("threshold", None)
+                frac_param = params.get("ref_abs_fraction", None)
+                if thr_param is not None:
+                    new_params["threshold"] = float(thr_param)
+                    new_params["ref_abs_fraction"] = None
+                elif frac_param is not None:
+                    new_params["ref_abs_fraction"] = float(frac_param)
+                else:
+                    new_params["ref_abs_fraction"] = 0.8
+
+                self._add_history_entry("drift_linear_tails", new_params)
+
+
+        # --- Loop-closure drift ---
+        elif op == "drift_linear_loopclosure":
+            ycol = params.get("column")
+            if ycol not in self.df.columns:
+                return
+
+            y_series = self.df[ycol]
+            if not np.issubdtype(y_series.dtype, np.number):
+                return
+
+            y = np.asarray(y_series.to_numpy(), dtype=float)
+            n = len(y)
+            if n < 2:
+                return
+
+            idx = np.arange(n, dtype=float)
+
+            # How big a window (fraction of total points) to use at each end
+            end_frac = float(params.get("end_window_fraction", 0.02))
+            window = max(1, int(end_frac * n))
+
+            # All finite y indices
+            finite = np.isfinite(y)
+            finite_indices = np.where(finite)[0]
+            if finite_indices.size < 2:
+                raise ValueError("Not enough finite points to estimate drift.")
+
+            # Take first/last 'window' finite points
+            start_indices = finite_indices[:window]
+            end_indices = finite_indices[-window:]
+
+            if start_indices.size == 0 or end_indices.size == 0:
+                raise ValueError("No finite points in start/end windows for drift estimate.")
+
+            start_mean = float(np.nanmean(y[start_indices]))
+            end_mean = float(np.nanmean(y[end_indices]))
+
+            if "drift_slope" in params:
+                slope = float(params["drift_slope"])
+            else:
+                denom = max(1, n - 1)
+                slope = (end_mean - start_mean) / denom
+                params["drift_slope"] = float(slope)
+                params["end_window_fraction"] = end_frac
+
+            # Subtract linear drift vs index so start/end line up on average
+            y_corr = y - slope * idx
+
+            self.df[ycol] = y_corr
+
+            if record:
+                self._add_history_entry(
+                    "drift_linear_loopclosure",
+                    {
+                        "x_column": params.get("x_column"),
+                        "column": ycol,
+                        "end_window_fraction": end_frac,
+                        "drift_slope": float(slope),
+                    },
+                )
 
         # ... more operations in future
         # elif op == "drift_correct": ...
@@ -634,6 +813,296 @@ class MainWindow(QtWidgets.QMainWindow):
             "threshold": thr,
         }
         return y_corr, info
+
+    def _drift_linear_tails_apply(self):
+        """Apply linear drift correction estimated from high-field tails."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(self, "Select columns",
+                                          "Select X and Y columns before drift correction.")
+            return
+
+        try:
+            # Use a default high-field fraction to define "saturated" tails
+            params = {
+                "x_column": x_name,
+                "column": y_name,
+                "ref_abs_fraction": 0.8,  # use |H| >= 0.8 * max|H|
+            }
+            self._apply_operation("drift_linear", params, record=True)
+            self.status.showMessage("Applied linear drift correction.")
+            self._replot()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Drift correction error", str(e))
+
+    def _compute_drift_tails(self, df, xcol, ycol, threshold):
+        """
+        Given df, field column xcol and signal ycol, and a high-field threshold,
+        fit drift from tail points (|H| >= threshold) vs index and return:
+
+            y_corr : drift-corrected signal
+            info   : dict with 'slope' and 'threshold'
+        """
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        n = len(y)
+        idx = np.arange(n, dtype=float)
+
+        finite = np.isfinite(x) & np.isfinite(y)
+        mask = finite & (np.abs(x) >= float(abs(threshold)))
+
+        if mask.sum() < 2:
+            raise ValueError("Not enough high-field points above the threshold to estimate drift.")
+
+        idx_ref = idx[mask]
+        y_ref = y[mask]
+
+        if np.allclose(idx_ref, idx_ref[0]):
+            raise ValueError("Reference indices are degenerate; cannot fit drift.")
+
+        # Fit y_ref ~ slope * idx_ref + intercept
+        slope, intercept = np.polyfit(idx_ref, y_ref, 1)
+
+        # Subtract drift relative to centre of reference indices (for numerical stability)
+        idx_center = idx_ref.mean()
+        y_corr = y - slope * (idx - idx_center)
+
+        info = {
+            "slope": float(slope),
+            "threshold": float(abs(threshold)),
+        }
+        return y_corr, info
+
+    def _drift_start_tails_mode(self):
+        """Enter interactive high-field tails drift-correction mode."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(self, "Select columns",
+                                          "Select X and Y columns before drift correction.")
+            return
+
+        # Take a snapshot to work from
+        self._drift_df_before = self.df.copy(deep=True)
+        self._drift_x_col = x_name
+        self._drift_y_col = y_name
+
+        x = np.asarray(self._drift_df_before[x_name].to_numpy(), dtype=float)
+        x_finite = x[np.isfinite(x)]
+        if x_finite.size == 0:
+            QtWidgets.QMessageBox.warning(self, "No data", "Selected X column has no finite values.")
+            return
+
+        # initial threshold: 80% of max |H|
+        self._drift_threshold = 0.8 * float(np.nanmax(np.abs(x_finite)))
+
+        # Activate mode
+        self.drift_mode_active = True
+        self.bg_mode_active = False  # ensure BG mode isn't also active
+        self.bgApplyBtn.setVisible(True)
+        self.bgCancelBtn.setVisible(True)
+        self.bgApplyBtn.setText("Apply drift")
+        self.bgCancelBtn.setText("Cancel")
+
+        # disable other editing controls (same helper you use for BG)
+        self._set_bg_blocked_enabled(False)
+
+        self.status.showMessage(
+            "Drift mode: drag the vertical line to set high-field tails, then click 'Apply drift'."
+        )
+
+        # create vertical line & connect events
+        ax = self.canvas.ax
+        ax.clear()
+        self._drift_vline = ax.axvline(self._drift_threshold, linestyle="--")
+
+        canvas = self.canvas
+        self._drift_cid_press = canvas.mpl_connect("button_press_event", self._drift_on_press)
+        self._drift_cid_motion = canvas.mpl_connect("motion_notify_event", self._drift_on_motion)
+        self._drift_cid_release = canvas.mpl_connect("button_release_event", self._drift_on_release)
+        self._drift_dragging = False
+
+        # show initial preview
+        self._drift_update_preview()
+
+
+    def _drift_linear_loopclosure_apply(self):
+        """Apply linear drift correction so that first and last points coincide."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not y_name:
+            QtWidgets.QMessageBox.warning(
+                self, "Select columns",
+                "Select a Y column before drift correction."
+            )
+            return
+
+        try:
+            params = {
+                "x_column": x_name,             # not strictly needed here, but kept for history
+                "column": y_name,
+                "end_window_fraction": 0.02,    # use first/last 2% of points
+            }
+            self._apply_operation("drift_linear_loopclosure", params, record=True)
+            self.status.showMessage("Applied linear drift correction (loop closure).")
+            self._replot()
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Drift correction error", str(e))
+
+    def _drift_update_preview(self):
+        """Recompute and display drift-corrected loop for current tails threshold."""
+        if not self.drift_mode_active or self._drift_df_before is None:
+            return
+
+        df = self._drift_df_before
+        xcol = self._drift_x_col
+        ycol = self._drift_y_col
+        thr = self._drift_threshold
+
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
+
+        ax = self.canvas.ax
+        ax.clear()
+
+        try:
+            y_corr, info = self._compute_drift_tails(df, xcol, ycol, thr)
+            slope = info["slope"]
+            thr_abs = info["threshold"]
+            title_extra = f"  (drift slope={slope:.3g}, |H|≥{thr_abs:.3g})"
+
+            # update parameter panel based on *preview* data
+            hc_plus, hc_minus, hc_avg = self._compute_coercivity(x, y_corr)
+            Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y_corr)
+            # Ms & BG slope unchanged by drift, so leave them as they are from committed state
+            self._set_param_labels(
+                hc_plus=hc_plus, hc_minus=hc_minus, hc_avg=hc_avg,
+                Mr_plus=Mr_plus, Mr_minus=Mr_minus, Mr_mag=Mr_mag,
+                Ms=None, m_bg=None,
+            )
+
+        except Exception as e:
+            # If fit fails, show raw loop and revert parameters to committed state
+            ax.plot(x, y, linewidth=1.5, alpha=0.6)
+            ax.set_xlabel(xcol)
+            ax.set_ylabel(ycol)
+            ax.set_title(f"Drift preview (tails): fit invalid: {e}")
+            ax.grid(True, alpha=0.3)
+            self._update_parameters()
+            self.canvas.fig.canvas.draw_idle()
+            return
+
+        # 1) Raw loop (faint)
+        ax.plot(x, y, linewidth=1.0, alpha=0.3, label="raw loop")
+
+        # 2) Drift-corrected loop
+        ax.plot(x, y_corr, linewidth=1.5, label="drift-corrected (preview)")
+
+        # 3) Highlight tail points used for the fit
+        finite = np.isfinite(x) & np.isfinite(y)
+        thr_abs = float(abs(thr_abs))
+        mask_tail = finite & (np.abs(x) >= thr_abs)
+        if mask_tail.sum() >= 2:
+            ax.scatter(x[mask_tail], y_corr[mask_tail], s=15, marker=".", alpha=0.7, label="tails used")
+
+        # 4) Threshold guides & shading
+        self._drift_vline = ax.axvline(+thr_abs, linestyle="--")
+        ax.axvline(-thr_abs, linestyle="--")
+
+        x_finite = x[finite]
+        if x_finite.size > 0:
+            x_max = float(np.nanmax(np.abs(x_finite)))
+            ax.axvspan(+thr_abs, +x_max, alpha=0.05)
+            ax.axvspan(-x_max, -thr_abs, alpha=0.05)
+
+        ax.set_xlabel(xcol)
+        ax.set_ylabel(ycol + " (drift-corrected preview)")
+        ax.set_title("Preview: linear drift (high-field tails)" + title_extra)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+
+        # 5) Feature markers on the preview loop
+        if self.chkShowMarkers.isChecked():
+            self._draw_feature_markers(x, y_corr, bg_info=None, use_history_if_none=True)
+
+        self.canvas.fig.canvas.draw_idle()
+        self.status.showMessage(
+            f"Drift mode: |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply drift'"
+        )
+
+    def _drift_on_press(self, event):
+        if not self.drift_mode_active or event.inaxes != self.canvas.ax:
+            return
+        if event.xdata is None:
+            return
+        x_line = self._drift_threshold
+        tol = 0.02 * (self.canvas.ax.get_xlim()[1] - self.canvas.ax.get_xlim()[0])
+        if abs(event.xdata - x_line) < tol:
+            self._drift_dragging = True
+
+    def _drift_on_motion(self, event):
+        if not self.drift_mode_active or not self._drift_dragging:
+            return
+        if event.inaxes != self.canvas.ax or event.xdata is None:
+            return
+
+        # Optionally clamp to data range
+        x = np.asarray(self._drift_df_before[self._drift_x_col].to_numpy(), dtype=float)
+        x_finite = x[np.isfinite(x)]
+        if x_finite.size:
+            x_min, x_max = float(x_finite.min()), float(x_finite.max())
+            self._drift_threshold = min(max(event.xdata, x_min), x_max)
+        else:
+            self._drift_threshold = event.xdata
+
+        self._drift_update_preview()
+
+    def _drift_on_release(self, event):
+        if not self.drift_mode_active:
+            return
+        self._drift_dragging = False
+
+    def _drift_disconnect_events(self):
+        if self._drift_cid_press is not None:
+            self.canvas.mpl_disconnect(self._drift_cid_press)
+        if self._drift_cid_motion is not None:
+            self.canvas.mpl_disconnect(self._drift_cid_motion)
+        if self._drift_cid_release is not None:
+            self.canvas.mpl_disconnect(self._drift_cid_release)
+        self._drift_cid_press = self._drift_cid_motion = self._drift_cid_release = None
+
+    def _drift_exit_mode(self):
+        self.drift_mode_active = False
+        self._drift_disconnect_events()
+
+        self._drift_df_before = None
+        self._drift_x_col = None
+        self._drift_y_col = None
+        self._drift_threshold = None
+
+        if self._drift_vline is not None:
+            try:
+                self._drift_vline.remove()
+            except Exception:
+                pass
+            self._drift_vline = None
+
+        self.bgApplyBtn.setVisible(False)
+        self.bgCancelBtn.setVisible(False)
+        self._set_bg_blocked_enabled(True)
 
     def _bg_start_mode(self):
         """Enter interactive background-subtraction mode."""
@@ -827,57 +1296,163 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bg_cid_press = self._bg_cid_motion = self._bg_cid_release = None
 
     def _bg_commit(self):
-        if not self.bg_mode_active or self._bg_df_before is None:
+        #if (not self.bg_mode_active or self._bg_df_before is None) and (not self.drift_mode_active or self._drift_df_before is None):
+         #   return
+        # if BG mode is active → commit BG
+        if self.bg_mode_active and self._bg_df_before is not None:
+            df_before = self._bg_df_before
+            xcol = self._bg_x_col
+            ycol = self._bg_y_col
+            thr = self._bg_threshold
+
+            try:
+                y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Cannot apply background", str(e))
+                return
+
+            # Commit: replace current df with BG-subtracted version
+            self.df = df_before.copy(deep=True)
+            self.df[ycol] = y_corr
+
+            # Log operation so undo/replay works
+            self._add_history_entry(
+                op="bg_linear_branches",
+                params={
+                    "x_column": xcol,
+                    "column": ycol,
+                    "threshold": info["threshold"],
+                    "m_pos": info["m_pos"],
+                    "b_pos": info["b_pos"],
+                    "m_neg": info["m_neg"],
+                    "b_neg": info["b_neg"],
+                    "m_bg": info["m_bg"],
+                },
+            )
+            self._bg_exit_mode()
+            self.status.showMessage(
+                f"Applied BG: |{xcol}|>={info['threshold']:.4g}, m_bg={info['m_bg']:.3g}"
+            )
+            self._replot()
             return
 
-        df_before = self._bg_df_before
-        xcol = self._bg_x_col
-        ycol = self._bg_y_col
-        thr = self._bg_threshold
+    def _bg_commit(self):
+        """
+        Handler for the 'Apply' button.
 
-        try:
-            y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
-        except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Cannot apply background", str(e))
+        - If background mode is active, commit the BG subtraction.
+        - If drift-tails mode is active, commit the drift correction.
+        """
+        # --- Background subtraction commit ---
+        if self.bg_mode_active:
+            if self._bg_df_before is None:
+                return
+
+            df_before = self._bg_df_before
+            xcol = self._bg_x_col
+            ycol = self._bg_y_col
+            thr = self._bg_threshold
+
+            try:
+                # Uses your branch-based BG function:
+                #   y_corr, info = _compute_bg_corrected(df, xcol, ycol, threshold)
+                # where info = {
+                #   "m_pos", "b_pos", "m_neg", "b_neg", "m_bg", "threshold"
+                # }
+                y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Cannot apply background", str(e))
+                return
+
+            # Commit: replace working df with BG-subtracted version
+            self.df = df_before.copy(deep=True)
+            self.df[ycol] = y_corr
+
+            # Record operation so undo/rebuild works
+            self._add_history_entry(
+                op="bg_linear_branches",
+                params={
+                    "x_column": xcol,
+                    "column": ycol,
+                    "threshold": info.get("threshold"),
+                    "m_pos": info.get("m_pos"),
+                    "b_pos": info.get("b_pos"),
+                    "m_neg": info.get("m_neg"),
+                    "b_neg": info.get("b_neg"),
+                    "m_bg": info.get("m_bg"),
+                },
+            )
+
+            # Exit BG mode and redraw
+            self._bg_exit_mode()
+            self.status.showMessage(
+                f"Applied linear background subtraction "
+                f"(|{xcol}| ≥ {info.get('threshold', 0):.4g}, "
+                f"m_bg = {info.get('m_bg', 0):.3g})"
+            )
+            self._replot()
             return
 
-        # Commit: replace current df with BG-subtracted version
-        self.df = df_before.copy(deep=True)
-        self.df[ycol] = y_corr
+        # --- Drift (high-field tails) commit ---
+        if self.drift_mode_active:
+            if self._drift_df_before is None:
+                return
 
-        # Log operation so undo/replay works
-        self._add_history_entry(
-            op="bg_linear_branches",
-            params={
-                "x_column": xcol,
-                "column": ycol,
-                "threshold": info["threshold"],
-                "m_pos": info["m_pos"],
-                "b_pos": info["b_pos"],
-                "m_neg": info["m_neg"],
-                "b_neg": info["b_neg"],
-                "m_bg": info["m_bg"],
-            },
-        )
+            df_before = self._drift_df_before
+            xcol = self._drift_x_col
+            ycol = self._drift_y_col
+            thr = self._drift_threshold
 
-        self._bg_exit_mode()
-        self.status.showMessage(
-            f"Applied BG: |{xcol}|>={info['threshold']:.4g}, m_bg={info['m_bg']:.3g}"
-        )
-        self._replot()
+            try:
+                # Uses your drift helper:
+                #   y_corr, info = _compute_drift_tails(df, xcol, ycol, threshold)
+                # where info = { "slope", "threshold" }
+                y_corr, info = self._compute_drift_tails(df_before, xcol, ycol, thr)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Cannot apply drift", str(e))
+                return
+
+            # Commit: replace working df with drift-corrected version
+            self.df = df_before.copy(deep=True)
+            self.df[ycol] = y_corr
+
+            # Record operation (so undo/rebuild can re-apply with same slope/threshold)
+            self._add_history_entry(
+                op="drift_linear_tails",
+                params={
+                    "x_column": xcol,
+                    "column": ycol,
+                    # explicit threshold used in interactive mode
+                    "threshold": info.get("threshold"),
+                    "drift_slope": info.get("slope"),
+                },
+            )
+
+            # Exit drift mode and redraw
+            self._drift_exit_mode()
+            self.status.showMessage(
+                f"Applied linear drift correction (tails): "
+                f"slope = {info.get('slope', 0):.3g}, "
+                f"|{xcol}| ≥ {info.get('threshold', 0):.4g}"
+            )
+            self._replot()
+            return
+
+        # If neither mode is active, do nothing
+        return
+
 
     def _bg_cancel(self):
-        """User clicks 'Cancel BG' – discard preview and restore df."""
-        if not self.bg_mode_active:
+        if self.bg_mode_active:
+            ...
             return
 
-        # Just restore df_before and exit
-        if self._bg_df_before is not None:
-            self.df = self._bg_df_before
-
-        self._bg_exit_mode()
-        self.status.showMessage("Background subtraction canceled.")
-        self._replot()
+        if self.drift_mode_active:
+            if self._drift_df_before is not None:
+                self.df = self._drift_df_before
+            self._drift_exit_mode()
+            self.status.showMessage("Drift correction canceled.")
+            self._replot()
 
     def _bg_exit_mode(self):
         """Common cleanup for leaving background mode."""
@@ -910,6 +1485,8 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "centerYAct", None),
             getattr(self, "undoAct", None),
             getattr(self, "bgAct", None),         # no nested BG inside BG mode
+            getattr(self, "driftTailsAct", None),
+            getattr(self, "driftLoopAct", None),
             getattr(self, "openAct", None),       # optional: block changing file mid-preview
             # getattr(self, "exportHistAct", None),  # if you have one
         ]:
