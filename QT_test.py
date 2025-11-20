@@ -33,7 +33,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("Magnetometry Data Viewer")
+        self.setWindowTitle("M(H)ero")
         self.resize(1000, 640)
 
         # --- central layout (controls + plot) ---
@@ -135,6 +135,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lblMrPlus = QtWidgets.QLabel("—")
         self.lblMrMinus = QtWidgets.QLabel("—")
 
+        self.lblHs = QtWidgets.QLabel("—")
+        self.lblHsPlus = QtWidgets.QLabel("—")
+        self.lblHsMinus = QtWidgets.QLabel("—")
+
         self.lblMs = QtWidgets.QLabel("—")
         self.lblBgSlope = QtWidgets.QLabel("—")
 
@@ -145,6 +149,10 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Mr (mag):", self.lblMr)
         form.addRow("Mr+:", self.lblMrPlus)
         form.addRow("Mr−:", self.lblMrMinus)
+
+        form.addRow("Hs (mag):", self.lblHs)
+        form.addRow("Hs+:", self.lblHsPlus)
+        form.addRow("Hs−:", self.lblHsMinus)
 
         form.addRow("M\u209B (sat):", self.lblMs)      # Mₛ
         form.addRow("BG slope:", self.lblBgSlope)
@@ -169,27 +177,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         process_menu = self.menuBar().addMenu("&Process")
 
-        self.centerYAct = QtGui.QAction("Center &Y about 0", self)
+        self.centerYAct = QtGui.QAction("Center about &Y = 0", self)
         self.centerYAct.setShortcut("Ctrl+Y")
         self.centerYAct.setStatusTip("Subtract mean of current Y column so it is centered at zero")
         self.centerYAct.triggered.connect(self.center_y_about_zero)
         process_menu.addAction(self.centerYAct)
     
-        self.bgAct = QtGui.QAction("Linear background (high field)…", self)
+        self.bgAct = QtGui.QAction("Linear background subtraction (fitting)", self)
         self.bgAct.setShortcut("Ctrl+B")
         self.bgAct.setStatusTip("Fit a straight line to the high-field region and subtract it")
         self.bgAct.triggered.connect(self._bg_start_mode)
         process_menu.addAction(self.bgAct)
 
         # --- Drift corrections ---
-        self.driftTailsAct = QtGui.QAction("Linear drift (high-field tails)", self)
+        self.driftTailsAct = QtGui.QAction("Linear drift correction (fitting)", self)
         self.driftTailsAct.setStatusTip("Estimate drift from high-field tails using equally-spaced time")
         self.driftTailsAct.setShortcut("Ctrl+D")
         self.driftTailsAct.triggered.disconnect()
         self.driftTailsAct.triggered.connect(self._drift_start_tails_mode)
         process_menu.addAction(self.driftTailsAct)
 
-        self.driftLoopAct = QtGui.QAction("Linear drift (loop closure)", self)
+        self.driftLoopAct = QtGui.QAction("Linear drift correction (endpoints)", self)
         self.driftLoopAct.setStatusTip("Estimate drift so that first and last points coincide")
         self.driftLoopAct.triggered.connect(self._drift_linear_loopclosure_apply)
         process_menu.addAction(self.driftLoopAct)
@@ -203,9 +211,21 @@ class MainWindow(QtWidgets.QMainWindow):
         process_menu.addAction(self.undoAct)
 
         export_menu = self.menuBar().addMenu("&Export")
-        export_hist_act = QtGui.QAction("Export &History…", self)
+
+        export_hist_act = QtGui.QAction("Export &History", self)
         export_hist_act.triggered.connect(self.export_history)
         export_menu.addAction(export_hist_act)
+
+        self.exportLoopAct = QtGui.QAction("Export current loop to &TXT", self)
+        self.exportLoopAct.setStatusTip("Export the current X/Y loop to a text file")
+        self.exportLoopAct.triggered.connect(self._export_current_loop_to_txt)
+        export_menu.addAction(self.exportLoopAct)
+
+        self.copyLoopAct = QtGui.QAction("&Copy current loop to clipboard", self)
+        self.copyLoopAct.setStatusTip("Copy the current X/Y loop as tab-separated text")
+        self.copyLoopAct.setShortcut("Ctrl+C")
+        self.copyLoopAct.triggered.connect(self._copy_current_loop_to_clipboard)
+        export_menu.addAction(self.copyLoopAct)
 
         # Data
         self.original_df = None    # raw data from file
@@ -883,6 +903,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.df is None:
             QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
             return
+        
+        # When starting drift mode:
+        self.bgApplyBtn.setText("Apply drift")
+        self.bgCancelBtn.setText("Cancel")
 
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
@@ -1110,6 +1134,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "No data", "Load data before background subtraction.")
             return
 
+        # When starting BG mode:
+        self.bgApplyBtn.setText("Apply BG")
+        self.bgCancelBtn.setText("Cancel")
+
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
         if not x_name or not y_name:
@@ -1215,10 +1243,20 @@ class MainWindow(QtWidgets.QMainWindow):
             Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x, y_corr)
             Ms = 0.5 * (b_pos - b_neg)
 
+             # noise + Hs from preview BG tails:
+            noise_std = self._estimate_noise_from_bg_tails(x, y_corr, info, Ms)
+            if noise_std is not None and noise_std > 0:
+                Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
+                    x, y_corr, Ms, noise_std, k=3
+                )
+            else:
+                Hs_plus = Hs_minus = Hs_mag = None
+
             self._set_param_labels(
                         hc_plus=hc_plus, hc_minus=hc_minus, hc_avg=hc_avg,
                         Mr_plus=Mr_plus, Mr_minus=Mr_minus, Mr_mag=Mr_mag,
                         Ms=Ms, m_bg=m_bg,
+                        hs_plus=Hs_plus, hs_minus=Hs_minus, hs_mag=Hs_mag,
                     )
 
         except Exception as e:
@@ -1444,7 +1482,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bg_cancel(self):
         if self.bg_mode_active:
-            ...
+            if not self.bg_mode_active:
+                return
+            # Just restore df_before and exit
+            if self._bg_df_before is not None:
+                self.df = self._bg_df_before
+
+            self._bg_exit_mode()
+            self.status.showMessage("Background subtraction canceled.")
+            self._replot()
             return
 
         if self.drift_mode_active:
@@ -1488,7 +1534,9 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "driftTailsAct", None),
             getattr(self, "driftLoopAct", None),
             getattr(self, "openAct", None),       # optional: block changing file mid-preview
-            # getattr(self, "exportHistAct", None),  # if you have one
+            getattr(self, "exportLoopAct", None), 
+            getattr(self, "copyLoopAct", None),
+            getattr(self, "exportHistAct", None), 
         ]:
             if act is not None:
                 act.setEnabled(enabled)
@@ -1663,6 +1711,56 @@ class MainWindow(QtWidgets.QMainWindow):
             float(Mr_mag) if Mr_mag is not None else None,
         )
 
+    def _compute_saturation_field_noise_based(self, x, y, Ms, noise_std, k=3):
+        """
+        Hs: first fields past which |M - Ms| <= k*noise on each branch.
+        """
+        if noise_std is None or noise_std <= 0:
+            return None, None, None
+
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        x = x[finite]
+        y = y[finite]
+        if x.size < 2:
+            return None, None, None
+
+        Ms_abs = abs(Ms)
+        band = k * noise_std
+
+        # Positive branch: M -> +Ms
+        mask_pos = x > 0
+        x_pos = x[mask_pos]
+        y_pos = y[mask_pos]
+        Hs_plus = None
+        if x_pos.size:
+            sat_mask_pos = np.abs(y_pos - Ms_abs) <= band
+            if sat_mask_pos.any():
+                Hs_plus = float(x_pos[sat_mask_pos].min())
+
+        # Negative branch: M -> -Ms
+        mask_neg = x < 0
+        x_neg = x[mask_neg]
+        y_neg = y[mask_neg]
+        Hs_minus = None
+        if x_neg.size:
+            sat_mask_neg = np.abs(y_neg + Ms_abs) <= band
+            if sat_mask_neg.any():
+                Hs_minus = float(x_neg[sat_mask_neg].max())
+
+        Hs_mag = None
+        if Hs_plus is not None and Hs_minus is not None:
+            Hs_mag = 0.5 * (abs(Hs_plus) + abs(Hs_minus))
+        elif Hs_plus is not None:
+            Hs_mag = abs(Hs_plus)
+        elif Hs_minus is not None:
+            Hs_mag = abs(Hs_minus)
+
+        return Hs_plus, Hs_minus, Hs_mag
+
+
+
 
     def _update_parameters(self):
         """
@@ -1676,6 +1774,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Defaults when nothing is available
         for lbl in [self.lblHc, self.lblHcPlus, self.lblHcMinus,
                     self.lblMr, self.lblMrPlus, self.lblMrMinus,
+                    self.lblHs, self.lblHsPlus, self.lblHsMinus,
                     self.lblMs, self.lblBgSlope]:
             lbl.setText("—")
 
@@ -1741,6 +1840,38 @@ class MainWindow(QtWidgets.QMainWindow):
             msat = 0.5 * (b_pos - b_neg)
             self.lblMs.setText(f"{msat:.4g}")
 
+        # --- 5) Saturation field from Ms and current loop (only if Ms known) ---
+        last_bg = self._get_last_bg_info_for_current_axes()
+        if last_bg is None:
+            return
+
+        if last_bg is not None and msat is not None:
+            noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, msat)
+            if noise_std is not None:
+                Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
+                    x, y, msat, noise_std, k=2
+                )
+            if Hs_plus is not None:
+                self.lblHsPlus.setText(f"{Hs_plus:.4g}")
+            else:
+                self.lblHsPlus.setText("—")
+
+            if Hs_minus is not None:
+                self.lblHsMinus.setText(f"{Hs_minus:.4g}")
+            else:
+                self.lblHsMinus.setText("—")
+
+            if Hs_mag is not None:
+                self.lblHs.setText(f"{Hs_mag:.4g}")
+            else:
+                self.lblHs.setText("—")
+        else:
+            # No Ms → no meaningful Hs
+            self.lblHs.setText("—")
+            self.lblHsPlus.setText("—")
+            self.lblHsMinus.setText("—")
+
+
     def _get_last_bg_info_for_current_axes(self):
         """
         Find the most recent bg_linear_branches operation that matches
@@ -1758,6 +1889,52 @@ class MainWindow(QtWidgets.QMainWindow):
                         params.get("column") == y_name):
                     return params
         return None
+
+    def _estimate_noise_from_bg_tails(self, x, y, last_bg, Ms):
+        """
+        Estimate noise from the BG-corrected high-field tails:
+
+        - use |H| >= threshold from last_bg
+        - subtract +Ms / -Ms on each branch
+        - compute std of residuals
+        """
+        if last_bg is None or Ms is None:
+            return None
+
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 3:
+            return None
+
+        thr = float(abs(last_bg.get("threshold", 0.0)))
+
+        mask_pos = finite & (x >= thr)
+        mask_neg = finite & (x <= -thr)
+
+        residuals = []
+
+        if mask_pos.sum() >= 2:
+            # positive tail ~ +Ms
+            res_pos = y[mask_pos] - Ms
+            residuals.append(res_pos)
+
+        if mask_neg.sum() >= 2:
+            # negative tail ~ -Ms
+            res_neg = y[mask_neg] + Ms
+            residuals.append(res_neg)
+
+        if not residuals:
+            return None
+
+        all_res = np.concatenate(residuals)
+        if all_res.size < 2:
+            return None
+
+        noise_std = float(np.nanstd(all_res))
+        return noise_std
+
+
 
     def _draw_feature_markers(self, x, y, bg_info=None, use_history_if_none=True):
         """
@@ -1829,10 +2006,40 @@ class MainWindow(QtWidgets.QMainWindow):
                             textcoords="offset points",
                             fontsize=8)
 
+    # --- Hs vertical markers (noise-based) ---
+        noise_std = self._estimate_noise_from_bg_tails(x, y, last_bg, msat)
+        if noise_std is not None and noise_std > 0:
+            Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
+                x, y, msat, noise_std, k=3
+            )
+
+            y_min, y_max = float(y.min()), float(y.max())
+
+            if Hs_plus is not None:
+                ax.vlines(Hs_plus, y_min, y_max, linestyles="--")
+                ax.annotate(
+                    "Hs+",
+                    xy=(Hs_plus, y_max),
+                    xytext=(3, -15),
+                    textcoords="offset points",
+                    fontsize=8,
+                )
+
+            if Hs_minus is not None:
+                ax.vlines(Hs_minus, y_min, y_max, linestyles="--")
+                ax.annotate(
+                    "Hs−",
+                    xy=(Hs_minus, y_max),
+                    xytext=(3, -15),
+                    textcoords="offset points",
+                    fontsize=8,
+                )
+
     def _set_param_labels(self,
                         hc_plus=None, hc_minus=None, hc_avg=None,
                         Mr_plus=None, Mr_minus=None, Mr_mag=None,
-                        Ms=None, m_bg=None):
+                        Ms=None, m_bg=None,
+                        hs_plus=None, hs_minus=None, hs_mag=None):
         """Update the parameter panel labels, leaving None as '—'."""
         def set_lbl(lbl, val):
             lbl.setText("—" if val is None else f"{val:.4g}")
@@ -1840,6 +2047,10 @@ class MainWindow(QtWidgets.QMainWindow):
         set_lbl(self.lblHcPlus, hc_plus)
         set_lbl(self.lblHcMinus, hc_minus)
         set_lbl(self.lblHc, hc_avg)
+
+        set_lbl(self.lblHsPlus, hs_plus)
+        set_lbl(self.lblHsMinus, hs_minus)
+        set_lbl(self.lblHs, hs_mag)
 
         set_lbl(self.lblMrPlus, Mr_plus)
         set_lbl(self.lblMrMinus, Mr_minus)
@@ -1915,6 +2126,101 @@ class MainWindow(QtWidgets.QMainWindow):
 
         restore_combo(self.xCombo, old_x)
         restore_combo(self.yCombo, old_y)
+
+    def _get_current_loop_dataframe(self):
+        """
+        Return a 2-column DataFrame with the currently selected X and Y
+        columns, or None if not available/valid.
+        """
+        if self.df is None:
+            return None
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            return None
+
+        if x_name not in self.df.columns or y_name not in self.df.columns:
+            return None
+
+        x_series = self.df[x_name]
+        y_series = self.df[y_name]
+
+        # Require numeric columns for export
+        if not (np.issubdtype(x_series.dtype, np.number) and
+                np.issubdtype(y_series.dtype, np.number)):
+            return None
+
+        # Keep as-is (including NaNs) so export matches what you are plotting
+        loop_df = pd.DataFrame({
+            x_name: x_series.to_numpy(),
+            y_name: y_series.to_numpy(),
+        })
+
+        return loop_df
+    
+    def _export_current_loop_to_txt(self):
+        """Export the current X/Y loop to a tab-separated .txt file."""
+        loop_df = self._get_current_loop_dataframe()
+        if loop_df is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot export",
+                "No valid numeric X/Y columns selected to export."
+            )
+            return
+
+        # File dialog
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export current loop to TXT",
+            "",
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not path:
+            return
+
+        try:
+            # Tab-separated, header included, no index
+            loop_df.to_csv(
+                path,
+                sep="\t",
+                index=False,
+                float_format="%.10g",
+            )
+            self.status.showMessage(f"Exported current loop to {path}")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Export error",
+                f"Failed to export data:\n{e}"
+            )
+    def _copy_current_loop_to_clipboard(self):
+        """Copy the current X/Y loop as tab-separated text to the clipboard."""
+        loop_df = self._get_current_loop_dataframe()
+        if loop_df is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot copy",
+                "No valid numeric X/Y columns selected to copy."
+            )
+            return
+
+        # Convert DataFrame to TSV string
+        from io import StringIO
+        buf = StringIO()
+        loop_df.to_csv(
+            buf,
+            sep="\t",
+            index=False,
+            float_format="%.10g",
+        )
+        text = buf.getvalue()
+
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(text)
+
+        self.status.showMessage(
+            f"Copied {len(loop_df)} rows of {loop_df.columns[0]} vs {loop_df.columns[1]} to clipboard"
+        )
+
 
 
     
