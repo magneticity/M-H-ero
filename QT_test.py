@@ -29,22 +29,261 @@ class PlotCanvas(FigureCanvas):
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
 
+class SetAxesDialog(QtWidgets.QDialog):
+    """
+    Dialog to manually set what the X and Y axes represent and their unit systems,
+    without modifying the data or history.
+    """
+    def __init__(self, parent=None,
+                 current_x_type=None, current_x_system=None,
+                 current_y_type=None, current_y_system=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set axes")
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # --- X axis group ---
+        groupX = QtWidgets.QGroupBox("X axis quantity")
+        x_layout = QtWidgets.QVBoxLayout(groupX)
+
+        self.radioXUnknown = QtWidgets.QRadioButton("Unknown / ambiguous")
+        self.radioX_H = QtWidgets.QRadioButton("Field H")
+        self.radioX_B = QtWidgets.QRadioButton("Flux density B")
+
+        x_layout.addWidget(self.radioXUnknown)
+        x_layout.addWidget(self.radioX_H)
+        x_layout.addWidget(self.radioX_B)
+        layout.addWidget(groupX)
+
+        # Preselect X type
+        if current_x_type == "H":
+            self.radioX_H.setChecked(True)
+        elif current_x_type == "B":
+            self.radioX_B.setChecked(True)
+        else:
+            self.radioXUnknown.setChecked(True)
+
+        # X unit system
+        formX = QtWidgets.QFormLayout()
+        self.xSystemCombo = QtWidgets.QComboBox()
+        self.xSystemCombo.addItem("Unspecified")
+        self.xSystemCombo.addItem("SI")
+        self.xSystemCombo.addItem("cgs-emu/Gaussian")
+
+        if current_x_system in ("SI", "cgs-emu/Gaussian"):
+            idx = self.xSystemCombo.findText(current_x_system)
+            if idx >= 0:
+                self.xSystemCombo.setCurrentIndex(idx)
+        else:
+            self.xSystemCombo.setCurrentIndex(0)
+
+        formX.addRow("Unit system for X:", self.xSystemCombo)
+        layout.addLayout(formX)
+
+        # --- Y axis group ---
+        groupY = QtWidgets.QGroupBox("Y axis quantity")
+        y_layout = QtWidgets.QVBoxLayout(groupY)
+
+        self.radioYUnknown = QtWidgets.QRadioButton("Unknown / ambiguous")
+        self.radioY_M = QtWidgets.QRadioButton("Magnetisation M")
+        self.radioY_m = QtWidgets.QRadioButton("Magnetic moment m")
+
+        y_layout.addWidget(self.radioYUnknown)
+        y_layout.addWidget(self.radioY_M)
+        y_layout.addWidget(self.radioY_m)
+        layout.addWidget(groupY)
+
+        # Preselect Y type
+        if current_y_type == "M":
+            self.radioY_M.setChecked(True)
+        elif current_y_type == "m":
+            self.radioY_m.setChecked(True)
+        else:
+            self.radioYUnknown.setChecked(True)
+
+        # Y unit system
+        formY = QtWidgets.QFormLayout()
+        self.ySystemCombo = QtWidgets.QComboBox()
+        self.ySystemCombo.addItem("Unspecified")
+        self.ySystemCombo.addItem("SI")
+        self.ySystemCombo.addItem("cgs-emu/Gaussian")
+
+        if current_y_system in ("SI", "cgs-emu/Gaussian"):
+            idx = self.ySystemCombo.findText(current_y_system)
+            if idx >= 0:
+                self.ySystemCombo.setCurrentIndex(idx)
+        else:
+            self.ySystemCombo.setCurrentIndex(0)
+
+        formY.addRow("Unit system for Y:", self.ySystemCombo)
+        layout.addLayout(formY)
+
+        # Info
+        info = QtWidgets.QLabel(
+            "This changes how axis labels and loop parameters are labelled, "
+            "but does not modify the data. Use 'Convert units' to actually "
+            "change numerical units."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # OK / Cancel
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self):
+        """
+        Returns:
+          x_type: None, 'H', or 'B'
+          x_system: None, 'SI', or 'cgs-emu/Gaussian'
+          y_type: None, 'M', or 'm'
+          y_system: None, 'SI', or 'cgs-emu/Gaussian'
+        """
+        # X type
+        if self.radioX_H.isChecked():
+            x_type = "H"
+        elif self.radioX_B.isChecked():
+            x_type = "B"
+        else:
+            x_type = None
+
+        # X system
+        xs = self.xSystemCombo.currentText()
+        if xs == "SI":
+            x_system = "SI"
+        elif xs == "cgs-emu/Gaussian":
+            x_system = "cgs-emu/Gaussian"
+        else:
+            x_system = None
+
+        # Y type
+        if self.radioY_M.isChecked():
+            y_type = "M"
+        elif self.radioY_m.isChecked():
+            y_type = "m"
+        else:
+            y_type = None
+
+        # Y system
+        ys = self.ySystemCombo.currentText()
+        if ys == "SI":
+            y_system = "SI"
+        elif ys == "cgs-emu/Gaussian":
+            y_system = "cgs-emu/Gaussian"
+        else:
+            y_system = None
+
+        return x_type, x_system, y_type, y_system
+
+class SetYQuantityDialog(QtWidgets.QDialog):
+    """
+    Dialog to manually set what the Y axis represents and its unit system,
+    without modifying the data or history.
+    """
+    def __init__(self, parent=None, current_type=None, current_system=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set Y quantity")
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Y type group
+        groupY = QtWidgets.QGroupBox("Y axis quantity")
+        y_layout = QtWidgets.QVBoxLayout(groupY)
+
+        self.radioUnknown = QtWidgets.QRadioButton("Unknown / ambiguous")
+        self.radioM = QtWidgets.QRadioButton("Magnetisation M")
+        self.radio_m = QtWidgets.QRadioButton("Magnetic moment m")
+
+        y_layout.addWidget(self.radioUnknown)
+        y_layout.addWidget(self.radioM)
+        y_layout.addWidget(self.radio_m)
+        layout.addWidget(groupY)
+
+        # Preselect based on current_type
+        if current_type == "M":
+            self.radioM.setChecked(True)
+        elif current_type == "m":
+            self.radio_m.setChecked(True)
+        else:
+            self.radioUnknown.setChecked(True)
+
+        # Unit system (for Y)
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        self.systemCombo = QtWidgets.QComboBox()
+        self.systemCombo.addItem("Unspecified")
+        self.systemCombo.addItem("SI")
+        self.systemCombo.addItem("cgs-emu/Gaussian")
+
+        if current_system in ("SI", "cgs-emu/Gaussian"):
+            idx = self.systemCombo.findText(current_system)
+            if idx >= 0:
+                self.systemCombo.setCurrentIndex(idx)
+        else:
+            self.systemCombo.setCurrentIndex(0)  # Unspecified
+
+        form.addRow("Unit system for Y:", self.systemCombo)
+
+        # Info label
+        self.infoLabel = QtWidgets.QLabel(
+            "This changes how loop parameters and markers are labelled, "
+            "but does not modify the data."
+        )
+        self.infoLabel.setWordWrap(True)
+        layout.addWidget(self.infoLabel)
+
+        # OK / Cancel
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self):
+        """
+        Returns:
+          y_type: None, 'M' or 'm'
+          y_system: None, 'SI' or 'cgs-emu/Gaussian'
+        """
+        if self.radioM.isChecked():
+            y_type = "M"
+        elif self.radio_m.isChecked():
+            y_type = "m"
+        else:
+            y_type = None
+
+        sys_text = self.systemCombo.currentText()
+        if sys_text == "SI":
+            y_system = "SI"
+        elif sys_text == "cgs-emu/Gaussian":
+            y_system = "cgs-emu/Gaussian"
+        else:
+            y_system = None
+
+        return y_type, y_system
+
 class VolumeNormalisationDialog(QtWidgets.QDialog):
     """
     Dialog to convert the Y axis between magnetisation M and moment m
     using a specified sample volume.
 
     Supports:
-      - SI:   M in A/m,     m in A·m^2,    V in m^3
-      - cgs:  M in emu/cm^3, m in emu,    V in cm^3
+      - SI:   M in A/m,        m in A·m^2,  V in m^3
+      - cgs:  M in emu/cm^3,   m in emu,    V in cm^3
     """
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, known_y_type=None, known_y_system=None):
         super().__init__(parent)
         self.setWindowTitle("Volume normalisation")
 
         layout = QtWidgets.QVBoxLayout(self)
 
-        # What does Y currently represent?
+        # Current Y quantity
         groupY = QtWidgets.QGroupBox("Current Y axis quantity")
         y_layout = QtWidgets.QVBoxLayout(groupY)
         self.radioY_M = QtWidgets.QRadioButton("Magnetisation M")
@@ -79,12 +318,30 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
 
         # Info label: describes what will happen
         self.infoLabel = QtWidgets.QLabel()
-        self._update_info_label()
         layout.addWidget(self.infoLabel)
 
         # React to radio changes to update info
         self.radioY_M.toggled.connect(self._update_info_label)
         self.radioY_m.toggled.connect(self._update_info_label)
+
+        # Apply known Y info, if any
+        if known_y_type is not None:
+            if known_y_type == "M":
+                self.radioY_M.setChecked(True)
+            elif known_y_type == "m":
+                self.radioY_m.setChecked(True)
+            # Lock the choice
+            self.radioY_M.setEnabled(False)
+            self.radioY_m.setEnabled(False)
+
+        if known_y_system is not None:
+            idx = self.systemCombo.findText(known_y_system)
+            if idx >= 0:
+                self.systemCombo.setCurrentIndex(idx)
+            self.systemCombo.setEnabled(False)
+
+        # Now that radios may have changed, set info label text
+        self._update_info_label()
 
         # OK / Cancel
         buttons = QtWidgets.QDialogButtonBox(
@@ -116,18 +373,36 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         return current_quantity, system, volume_value, volume_units
 
 
+    def _update_info_label(self):
+        if self.radioY_M.isChecked():
+            text = "Conversion: M → m  (multiply by volume V)"
+        else:
+            text = "Conversion: m → M  (divide by volume V)"
+        self.infoLabel.setText(text)
+
+    def get_selection(self):
+        """
+        Returns:
+          current_quantity: 'M' or 'm'
+          system: 'SI' or 'cgs-emu/Gaussian'
+          volume_value: float
+          volume_units: 'm^3' or 'cm^3'
+        """
+        current_quantity = "M" if self.radioY_M.isChecked() else "m"
+        system = self.systemCombo.currentText()
+        volume_value = float(self.volSpin.value())
+        volume_units = self.volUnitsCombo.currentText()
+        return current_quantity, system, volume_value, volume_units
+
 class UnitConversionDialog(QtWidgets.QDialog):
     """
-    Simple dialog to choose unit systems and which axes to convert.
+    Dialog to choose unit systems and what each axis represents.
 
-    For now we assume:
-      - X axis is magnetic field H
-      - Y axis is magnetisation M
-
-    Systems offered: SI, cgs-emu/Gaussian, cgs-esu, Heaviside-Lorentz.
-    Only SI <-> cgs-emu/Gaussian is implemented so far.
+    Assumes:
+      - X axis = field-like (H or B)
+      - Y axis = magnetisation-like (M or m)
     """
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, known_y_type=None, known_y_system=None):
         super().__init__(parent)
         self.setWindowTitle("Convert units")
 
@@ -152,6 +427,7 @@ class UnitConversionDialog(QtWidgets.QDialog):
 
         self.xTypeCombo = QtWidgets.QComboBox()
         self.xTypeCombo.addItems(["Field H", "Flux density B"])
+
         self.yTypeCombo = QtWidgets.QComboBox()
         self.yTypeCombo.addItems(["Magnetisation M", "Magnetic moment m"])
 
@@ -159,13 +435,27 @@ class UnitConversionDialog(QtWidgets.QDialog):
         axis_form.addRow("Y axis represents:", self.yTypeCombo)
 
         # What to convert
-        self.chkConvertField = QtWidgets.QCheckBox("Convert X axis (field H)")
-        self.chkConvertMag = QtWidgets.QCheckBox("Convert Y axis (magnetisation M)")
+        self.chkConvertField = QtWidgets.QCheckBox("Convert X axis")
+        self.chkConvertMag = QtWidgets.QCheckBox("Convert Y axis")
         self.chkConvertField.setChecked(True)
         self.chkConvertMag.setChecked(True)
 
         layout.addWidget(self.chkConvertField)
         layout.addWidget(self.chkConvertMag)
+
+        # If we already know Y type / system, preselect + lock them
+        if known_y_system is not None:
+            idx = self.fromCombo.findText(known_y_system)
+            if idx >= 0:
+                self.fromCombo.setCurrentIndex(idx)
+            self.fromCombo.setEnabled(False)   # current system is fixed
+
+        if known_y_type is not None:
+            if known_y_type == "M":
+                self.yTypeCombo.setCurrentText("Magnetisation M")
+            elif known_y_type == "m":
+                self.yTypeCombo.setCurrentText("Magnetic moment m")
+            self.yTypeCombo.setEnabled(False)  # Y meaning is fixed
 
         # Buttons
         buttons = QtWidgets.QDialogButtonBox(
@@ -191,7 +481,6 @@ class UnitConversionDialog(QtWidgets.QDialog):
             self.yTypeCombo.currentText(),
         )
 
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -215,7 +504,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.xCombo = QtWidgets.QComboBox()
         self.yCombo = QtWidgets.QComboBox()
         self.swapBtn = QtWidgets.QToolButton()
+        self.clearAxesBtn = QtWidgets.QToolButton()
         self.swapBtn.setText("⇄ Swap")
+        self.clearAxesBtn.setText("Clear units")
         self.autoRescaleChk = QtWidgets.QCheckBox("Auto-rescale")
         self.autoRescaleChk.setChecked(True)
 
@@ -233,6 +524,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Track physical quantity types and unit systems for axes
         self.y_quantity_type = None      # None = unknown/ambiguous, 'M' = magnetisation, 'm' = moment
         self.y_unit_system = None        # 'SI' or 'cgs-emu/Gaussian' or None
+        self.x_quantity_type = None      # 'H', 'B', or None
+        self.x_unit_system = None        # 'SI', 'cgs-emu/Gaussian', or None
 
         # Background-mode state
         self.bg_mode_active = False
@@ -262,6 +555,7 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addWidget(QtWidgets.QLabel("Y:"))
         h.addWidget(self.yCombo, 1)
         h.addWidget(self.swapBtn)
+        h.addWidget(self.clearAxesBtn)
         h.addStretch(1)
         h.addWidget(self.autoRescaleChk)
 
@@ -353,6 +647,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         process_menu = self.menuBar().addMenu("&Process")
 
+        # --- Set Y quantity ---
+        self.setAxesAct = QtGui.QAction("Set &axes", self)
+        self.setAxesAct.setStatusTip(
+            "Declare what the X and Y axes represent (H/B, M/m) and their unit systems"
+        )
+        self.setAxesAct.triggered.connect(self._open_set_axes_dialog)
+        process_menu.addAction(self.setAxesAct)
+
+        # --- Centre about Y=0 ---
         self.centerYAct = QtGui.QAction("Center about &Y = 0", self)
         self.centerYAct.setShortcut("Ctrl+Y")
         self.centerYAct.setStatusTip("Subtract mean of current Y column so it is centered at zero")
@@ -429,6 +732,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Wire UI interactions
         self.swapBtn.clicked.connect(self._swap_axes)
+        self.clearAxesBtn.clicked.connect(lambda: self._reset_axes_semantics(replot=True))
         # Delay connecting combos until we populate them (prevents spurious plots)
 
     # ---------- File loading ----------
@@ -446,6 +750,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.df = None
         self.original_df = None
         self.history = []
+        
+        # Reset axis semantics, don't replot until combos are set:
+        self._reset_axes_semantics(replot=False)
 
         try:
             self.status.showMessage(f"Loading: {path}")
@@ -576,8 +883,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Draw
         self.canvas.ax.clear()
         self.canvas.ax.plot(x, y, linewidth=1.5)
-        self.canvas.ax.set_xlabel(x_name)
-        self.canvas.ax.set_ylabel(y_name)
+        self._set_axis_labels(self.canvas.ax, x_name, y_name)
         self.canvas.ax.set_title(self.windowTitle())
         self.canvas.ax.grid(True, alpha=0.3)
 
@@ -588,11 +894,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 # Draw markers if enabled
         if self.chkShowMarkers.isChecked():
             self._draw_feature_markers(x, y)
-
-        self.canvas.fig.canvas.draw_idle()
-        self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
-        
-        self._update_parameters()
 
         self.canvas.fig.canvas.draw_idle()
         self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
@@ -1076,6 +1377,70 @@ class MainWindow(QtWidgets.QMainWindow):
         # elif op == "drift_correct": ...
         # (add more operations here as you implement them)
 
+    def _open_set_axes_dialog(self):
+        """Manually set what the X and Y axes represent and their unit systems."""
+        dlg = SetAxesDialog(
+            self,
+            current_x_type=self.x_quantity_type,
+            current_x_system=self.x_unit_system,
+            current_y_type=self.y_quantity_type,
+            current_y_system=self.y_unit_system,
+        )
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        x_type, x_system, y_type, y_system = dlg.get_selection()
+
+        # Update stored axis meanings
+        self.x_quantity_type = x_type
+        self.x_unit_system = x_system
+
+        self.y_quantity_type = y_type
+        self.y_unit_system = y_system
+
+        # Update Y-related captions (Mr vs mr, Ms vs ms)
+        self._update_y_quantity_labels()
+
+        # Replot so axis labels and markers pick up new meanings/units
+        self._replot()
+
+        desc_x = x_type or "unknown"
+        desc_y = y_type or "unknown"
+        if x_system:
+            desc_x += f" ({x_system})"
+        if y_system:
+            desc_y += f" ({y_system})"
+
+        self.status.showMessage(f"Axes set: X = {desc_x}, Y = {desc_y}")
+
+    def _open_set_y_quantity_dialog(self):
+        """Manually set what the Y axis represents and its unit system."""
+        dlg = SetYQuantityDialog(
+            self,
+            current_type=self.y_quantity_type,
+            current_system=self.y_unit_system,
+        )
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        y_type, y_system = dlg.get_selection()
+
+        # Update state
+        self.y_quantity_type = y_type
+        self.y_unit_system = y_system
+
+        # Update captions (Mr/Ms vs mr/ms vs generic)
+        self._update_y_quantity_labels()
+
+        # Recompute parameters & markers so labels match the new interpretation
+        # (replot usually calls _update_parameters, but we can be explicit)
+        self._replot()
+        self.status.showMessage(
+            f"Y quantity set to: "
+            f"{'M' if y_type=='M' else 'm' if y_type=='m' else 'unknown'}"
+            f"{', system=' + y_system if y_system else ''}"
+        )
+
     # Shift about y=0
     def center_y_about_zero(self):
         """Shift the currently selected Y column so its mean is 0."""
@@ -1286,7 +1651,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # show initial preview
         self._drift_update_preview()
 
-
     def _drift_linear_loopclosure_apply(self):
         """Apply linear drift correction so that first and last points coincide."""
         if self.df is None:
@@ -1349,8 +1713,9 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             # If fit fails, show raw loop and revert parameters to committed state
             ax.plot(x, y, linewidth=1.5, alpha=0.6)
-            ax.set_xlabel(xcol)
-            ax.set_ylabel(ycol)
+            y_label = self._format_y_axis_label(ycol)
+            ax.set_xlabel(self._format_x_axis_label(xcol))
+            ax.set_ylabel(y_label + " (drift preview)")
             ax.set_title(f"Drift preview (tails): fit invalid: {e}")
             ax.grid(True, alpha=0.3)
             self._update_parameters()
@@ -1380,8 +1745,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ax.axvspan(+thr_abs, +x_max, alpha=0.05)
             ax.axvspan(-x_max, -thr_abs, alpha=0.05)
 
-        ax.set_xlabel(xcol)
-        ax.set_ylabel(ycol + " (drift-corrected preview)")
+        y_label = self._format_y_axis_label(ycol)
+        ax.set_xlabel(self._format_x_axis_label(xcol))
+        ax.set_ylabel(y_label + " (drift preview)")
         ax.set_title("Preview: linear drift (high-field tails)" + title_extra)
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best")
@@ -1591,8 +1957,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # If fit fails (e.g. silly threshold), just show raw loop and
             # revert to parameters from committed data
             ax.plot(x, y, linewidth=1.5, alpha=0.6)
-            ax.set_xlabel(xcol)
-            ax.set_ylabel(ycol)
+            y_label = self._format_y_axis_label(ycol)
+            ax.set_xlabel(self._format_x_axis_label(xcol))
+            ax.set_ylabel(y_label + " (BG preview)")
             ax.set_title(f"Preview: background subtraction (fit invalid: {e})")
             ax.grid(True, alpha=0.3)
 
@@ -1637,8 +2004,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ax.axvspan(+thr_abs, +x_max, alpha=0.05)
             ax.axvspan(-x_max, -thr_abs, alpha=0.05)
 
-        ax.set_xlabel(xcol)
-        ax.set_ylabel(ycol + " / BG-corrected (preview)")
+        y_label = self._format_y_axis_label(ycol)
+        ax.set_xlabel(self._format_x_axis_label(xcol))
+        ax.set_ylabel(y_label + " (BG preview)")
         ax.set_title("Preview: background subtraction" + title_extra)
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best")
@@ -1650,7 +2018,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage(
             f"Background mode: |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply BG'"
         )
-
 
     def _bg_disconnect_events(self):
         if self._bg_cid_press is not None:
@@ -1720,7 +2087,7 @@ class MainWindow(QtWidgets.QMainWindow):
             thr = self._bg_threshold
 
             try:
-                # Uses your branch-based BG function:
+                # Uses branch-based BG function:
                 #   y_corr, info = _compute_bg_corrected(df, xcol, ycol, threshold)
                 # where info = {
                 #   "m_pos", "b_pos", "m_neg", "b_neg", "m_bg", "threshold"
@@ -1807,7 +2174,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # If neither mode is active, do nothing
         return
 
-
     def _bg_cancel(self):
         if self.bg_mode_active:
             if not self.bg_mode_active:
@@ -1867,6 +2233,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "exportHistAct", None), 
             getattr(self, "unitConvertAct", None),
             getattr(self, "volNormAct", None),
+            getattr(self, "setAxesAct", None),
         ]:
             if act is not None:
                 act.setEnabled(enabled)
@@ -2122,7 +2489,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "is not implemented yet."
         )
 
-
     def _update_parameters(self):
         """
         Recompute and display physical parameters for the selected
@@ -2232,7 +2598,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lblHsPlus.setText("—")
             self.lblHsMinus.setText("—")
 
-
     def _get_last_bg_info_for_current_axes(self, scaled=True):
         """
         Find the most recent bg_linear_branches operation that matches
@@ -2310,8 +2675,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return scaled_params
 
-
-
     def _estimate_noise_from_bg_tails(self, x, y, last_bg, Ms):
         """
         Estimate noise from the BG-corrected high-field tails:
@@ -2370,7 +2733,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        dlg = VolumeNormalisationDialog(self)
+        dlg = VolumeNormalisationDialog(
+            self,
+            known_y_type=self.y_quantity_type,
+            known_y_system=self.y_unit_system,
+        )
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
 
@@ -2397,18 +2764,24 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         try:
+            # Apply the numeric scaling
             self._apply_operation("volume_normalisation", params, record=True)
+
+            # Update semantic state before replotting, so labels use it
+            self.y_quantity_type = target_quantity   # 'M' or 'm' after conversion
+            self.y_unit_system = system              # 'SI' or 'cgs-emu/Gaussian'
+            self._update_y_quantity_labels()
+
+            # Now replot with the new semantics
+            self._replot()
+
             self.status.showMessage(
                 f"Volume normalisation: {current_quantity} → {target_quantity} "
                 f"(V={vol_value:g} {vol_units}, system={system})"
             )
-            self._replot()
-            self.y_quantity_type = target_quantity   # 'M' or 'm'
-            self.y_unit_system = system
-            self._update_y_quantity_labels()
+
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Volume normalisation error", str(e))
-
 
     def _open_unit_convert_dialog(self):
         """Open the unit conversion dialog and apply conversion if accepted."""
@@ -2425,14 +2798,18 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        dlg = UnitConversionDialog(self)
+        dlg = UnitConversionDialog(
+            self,
+            known_y_type=self.y_quantity_type,
+            known_y_system=self.y_unit_system,
+        )
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
 
         (from_sys, to_sys,
         convert_x, x_type_str,
         convert_y, y_type_str) = dlg.get_selection()
-        
+
         if from_sys == to_sys:
             self.status.showMessage("Unit conversion: source and target systems are the same.")
             return
@@ -2458,15 +2835,15 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        # Map UI strings → quantity codes
+        # Map UI strings → quantity codes ONCE
         x_q = None
-        y_q = None
         if convert_x:
             if x_type_str == "Field H":
                 x_q = "H"
             elif x_type_str == "Flux density B":
                 x_q = "B"
 
+        y_q = None
         if convert_y:
             if y_type_str == "Magnetisation M":
                 y_q = "M"
@@ -2483,17 +2860,27 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         try:
+            # Apply numeric conversion first
             self._apply_operation("unit_convert", params, record=True)
+
+            # ✅ NOW update axis meaning/state BEFORE replotting
+            if convert_x and x_q is not None:
+                self.x_quantity_type = x_q
+                self.x_unit_system = to_sys
+
+            if convert_y and y_q is not None:
+                self.y_quantity_type = y_q
+                self.y_unit_system = to_sys
+                self._update_y_quantity_labels()
+
+            # Replot with updated state so labels use H/B/M/m + units
+            self._replot()
+
             self.status.showMessage(
                 f"Converted units: {from_sys} → {to_sys} "
                 f"(X: {x_q or '-'}, Y: {y_q or '-'})"
             )
-            self._replot()
-            if convert_y:
-                y_q = "M" if y_type_str == "Magnetisation M" else "m"
-                self.y_quantity_type = y_q
-                self.y_unit_system = to_sys
-                self._update_y_quantity_labels()
+
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Unit conversion error", str(e))
 
@@ -2563,6 +2950,103 @@ class MainWindow(QtWidgets.QMainWindow):
             if mag_quantity is not None else 1.0
         return field_factor, mag_factor
 
+    def _get_x_units_string(self):
+        """Return a unit string for the X axis based on x_quantity_type & x_unit_system."""
+        q = self.x_quantity_type
+        s = self.x_unit_system
+
+        if q == "H":
+            if s == "SI":
+                return "A/m"
+            elif s == "cgs-emu/Gaussian":
+                return "Oe"
+        elif q == "B":
+            if s == "SI":
+                return "T"
+            elif s == "cgs-emu/Gaussian":
+                return "G"
+
+        return None  # unknown
+
+    def _get_y_units_string(self):
+        """Return a unit string for the Y axis based on y_quantity_type & y_unit_system."""
+        q = self.y_quantity_type
+        s = self.y_unit_system
+
+        if q == "M":
+            if s == "SI":
+                return "A/m"
+            elif s == "cgs-emu/Gaussian":
+                return "emu/cm^3"
+        elif q == "m":
+            if s == "SI":
+                return "A·m^2"
+            elif s == "cgs-emu/Gaussian":
+                return "emu"
+
+        return None  # unknown
+
+    def _format_x_axis_label(self, col_name: str) -> str:
+        """
+        Compose the X axis label from the known quantity/unit info and/or
+        the raw column name.
+        """
+        q = self.x_quantity_type
+        units = self._get_x_units_string()
+
+        if q in ("H", "B"):
+            base = q
+            if units:
+                return f"{base} ({units})"
+            else:
+                return base
+        else:
+            # Unknown physical meaning → fall back to column name
+            return col_name if col_name else "X"
+
+    def _format_y_axis_label(self, col_name: str) -> str:
+        """
+        Compose the Y axis label from the known quantity/unit info and/or
+        the raw column name.
+        """
+        q = self.y_quantity_type
+        units = self._get_y_units_string()
+
+        if q in ("M", "m"):
+            base = q
+            if units:
+                return f"{base} ({units})"
+            else:
+                return base
+        else:
+            # Unknown physical meaning → fall back to column name
+            return col_name if col_name else "Y"
+
+    def _set_axis_labels(self, ax, x_col_name: str, y_col_name: str):
+        """Convenience: set both axis labels on a given Axes."""
+        ax.set_xlabel(self._format_x_axis_label(x_col_name))
+        ax.set_ylabel(self._format_y_axis_label(y_col_name))
+
+    def _reset_axes_semantics(self, replot: bool = True):
+        """
+        Forget the physical meaning and unit systems of X and Y.
+
+        This does NOT change any data or history; it only resets:
+        - x_quantity_type / x_unit_system
+        - y_quantity_type / y_unit_system
+        and updates labels accordingly.
+        """
+        self.x_quantity_type = None
+        self.x_unit_system = None
+        self.y_quantity_type = None
+        self.y_unit_system = None
+
+        # Reset parameter captions back to generic "Sat (Y)", "Rem (Y)", etc.
+        self._update_y_quantity_labels()
+
+        # Replot so axis labels revert to column names
+        if replot and self.df is not None:
+            self._replot()
 
     def _draw_feature_markers(self, x, y, bg_info=None, use_history_if_none=True):
         """
@@ -2771,7 +3255,6 @@ class MainWindow(QtWidgets.QMainWindow):
         set_lbl(self.lblMs, Ms)
         set_lbl(self.lblBgSlope, m_bg)
 
-
     def _add_history_entry(self, op, params):
         """Append an operation to the history log."""
         from datetime import datetime
@@ -2905,6 +3388,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self, "Export error",
                 f"Failed to export data:\n{e}"
             )
+    
     def _copy_current_loop_to_clipboard(self):
         """Copy the current X/Y loop as tab-separated text to the clipboard."""
         loop_df = self._get_current_loop_dataframe()
@@ -2932,12 +3416,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage(
             f"Copied {len(loop_df)} rows of {loop_df.columns[0]} vs {loop_df.columns[1]} to clipboard"
         )
-
-
-
-    
-
-
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
