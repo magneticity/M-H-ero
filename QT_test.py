@@ -414,12 +414,34 @@ class UnitConversionDialog(QtWidgets.QDialog):
         # System choices
         self.fromCombo = QtWidgets.QComboBox()
         self.toCombo = QtWidgets.QComboBox()
-        systems = ["SI", "cgs-emu/Gaussian", "cgs-esu", "Heaviside-Lorentz"]
+        systems = ["SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"]
         self.fromCombo.addItems(systems)
         self.toCombo.addItems(systems)
 
         form.addRow("Current system:", self.fromCombo)
         form.addRow("Target system:", self.toCombo)
+
+        # Context-sensitive tooltip: show detailed HL explanation only when
+        # one of the system combos is set to Heaviside-Lorentz.
+        hl_tooltip = (
+            "Heaviside–Lorentz (HL) is the rationalized form of Gaussian units.\n"
+            "Conversions use SI ↔ Gaussian factors then apply HL rationalization:\n"
+            "H,B scaled by 1/√(4π); M,m scaled by √(4π)."
+        )
+
+        def _update_tooltips(_=None):
+            if self.fromCombo.currentText() == "Heaviside-Lorentz" or self.toCombo.currentText() == "Heaviside-Lorentz":
+                self.fromCombo.setToolTip(hl_tooltip)
+                self.toCombo.setToolTip(hl_tooltip)
+            else:
+                # keep a short, generic tooltip otherwise
+                short = "Choose unit system (SI, cgs-emu/Gaussian, Heaviside-Lorentz)"
+                self.fromCombo.setToolTip(short)
+                self.toCombo.setToolTip(short)
+
+        self.fromCombo.currentTextChanged.connect(_update_tooltips)
+        self.toCombo.currentTextChanged.connect(_update_tooltips)
+        _update_tooltips()
 
         # Axis meanings
         axis_form = QtWidgets.QFormLayout()
