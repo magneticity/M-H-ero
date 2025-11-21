@@ -29,6 +29,93 @@ class PlotCanvas(FigureCanvas):
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
 
+class VolumeNormalisationDialog(QtWidgets.QDialog):
+    """
+    Dialog to convert the Y axis between magnetisation M and moment m
+    using a specified sample volume.
+
+    Supports:
+      - SI:   M in A/m,     m in A·m^2,    V in m^3
+      - cgs:  M in emu/cm^3, m in emu,    V in cm^3
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Volume normalisation")
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # What does Y currently represent?
+        groupY = QtWidgets.QGroupBox("Current Y axis quantity")
+        y_layout = QtWidgets.QVBoxLayout(groupY)
+        self.radioY_M = QtWidgets.QRadioButton("Magnetisation M")
+        self.radioY_m = QtWidgets.QRadioButton("Magnetic moment m")
+        self.radioY_M.setChecked(True)
+        y_layout.addWidget(self.radioY_M)
+        y_layout.addWidget(self.radioY_m)
+        layout.addWidget(groupY)
+
+        # Unit system for Y
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        self.systemCombo = QtWidgets.QComboBox()
+        self.systemCombo.addItems(["SI", "cgs-emu/Gaussian"])
+        form.addRow("Unit system for Y:", self.systemCombo)
+
+        # Volume input
+        self.volSpin = QtWidgets.QDoubleSpinBox()
+        self.volSpin.setDecimals(6)
+        self.volSpin.setRange(0.0, 1e30)
+        self.volSpin.setValue(1.0)
+
+        self.volUnitsCombo = QtWidgets.QComboBox()
+        self.volUnitsCombo.addItems(["m^3", "cm^3"])
+
+        vol_hbox = QtWidgets.QHBoxLayout()
+        vol_hbox.addWidget(self.volSpin)
+        vol_hbox.addWidget(self.volUnitsCombo)
+
+        form.addRow("Sample volume:", vol_hbox)
+
+        # Info label: describes what will happen
+        self.infoLabel = QtWidgets.QLabel()
+        self._update_info_label()
+        layout.addWidget(self.infoLabel)
+
+        # React to radio changes to update info
+        self.radioY_M.toggled.connect(self._update_info_label)
+        self.radioY_m.toggled.connect(self._update_info_label)
+
+        # OK / Cancel
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _update_info_label(self):
+        if self.radioY_M.isChecked():
+            text = "Conversion: M → m  (multiply by volume V)"
+        else:
+            text = "Conversion: m → M  (divide by volume V)"
+        self.infoLabel.setText(text)
+
+    def get_selection(self):
+        """
+        Returns:
+          current_quantity: 'M' or 'm'
+          system: 'SI' or 'cgs-emu/Gaussian'
+          volume_value: float
+          volume_units: 'm^3' or 'cm^3'
+        """
+        current_quantity = "M" if self.radioY_M.isChecked() else "m"
+        system = self.systemCombo.currentText()
+        volume_value = float(self.volSpin.value())
+        volume_units = self.volUnitsCombo.currentText()
+        return current_quantity, system, volume_value, volume_units
+
+
 class UnitConversionDialog(QtWidgets.QDialog):
     """
     Simple dialog to choose unit systems and which axes to convert.
@@ -143,6 +230,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bgApplyBtn.clicked.connect(self._bg_commit)
         self.bgCancelBtn.clicked.connect(self._bg_cancel)
 
+        # Track physical quantity types and unit systems for axes
+        self.y_quantity_type = None      # None = unknown/ambiguous, 'M' = magnetisation, 'm' = moment
+        self.y_unit_system = None        # 'SI' or 'cgs-emu/Gaussian' or None
+
         # Background-mode state
         self.bg_mode_active = False
         self._bg_df_before = None   # df snapshot before starting BG mode
@@ -178,7 +269,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.chkShowMarkers.setChecked(False)   # default: OFF
         h.addWidget(self.chkShowMarkers)
         self.chkShowMarkers.toggled.connect(self._on_markers_toggled)
-
 
         vbox.addWidget(controls)
 
@@ -222,17 +312,16 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Hc+:", self.lblHcPlus)
         form.addRow("Hc−:", self.lblHcMinus)
 
-        form.addRow("Mr (mag):", self.lblMr)
-        form.addRow("Mr+:", self.lblMrPlus)
-        form.addRow("Mr−:", self.lblMrMinus)
-
         form.addRow("Hs (mag):", self.lblHs)
         form.addRow("Hs+:", self.lblHsPlus)
         form.addRow("Hs−:", self.lblHsMinus)
 
+        form.addRow("Mr (mag):", self.lblMr)
+        form.addRow("Mr+:", self.lblMrPlus)
+        form.addRow("Mr−:", self.lblMrMinus)
+
         form.addRow("M\u209B (sat):", self.lblMs)      # Mₛ
         form.addRow("BG slope:", self.lblBgSlope)
-
 
         self.paramDock.setWidget(panel)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.paramDock)
@@ -278,12 +367,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.driftLoopAct.triggered.connect(self._drift_linear_loopclosure_apply)
         process_menu.addAction(self.driftLoopAct)
 
+         # --- Convert between systems of units ---
         self.unitConvertAct = QtGui.QAction("Convert &units", self)
         self.unitConvertAct.setStatusTip(
             "Convert current field/magnetisation between SI and cgs/Gaussian units"
         )
+        self.unitConvertAct.setShortcut("Ctrl+U")
         self.unitConvertAct.triggered.connect(self._open_unit_convert_dialog)
         process_menu.addAction(self.unitConvertAct)
+
+        # --- Volume normalisation ---
+        self.volNormAct = QtGui.QAction("Volume normalisation", self)
+        self.volNormAct.setStatusTip("Convert between moment m and magnetisation M using sample volume")
+        self.volNormAct.setShortcut("Ctrl+M")
+        self.volNormAct.triggered.connect(self._open_volume_normalisation_dialog)
+        process_menu.addAction(self.volNormAct)
 
         process_menu.addSeparator()
 
@@ -464,7 +562,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_parameters()
 
     def _on_markers_toggled(self, checked):
-        # If we’re in background preview mode, redraw the preview;
+        # If in background preview mode, redraw the preview;
         # otherwise, just replot the committed data.
         if self.bg_mode_active:
             self._bg_update_preview()
@@ -764,6 +862,66 @@ class MainWindow(QtWidgets.QMainWindow):
                     new_params["ref_abs_fraction"] = 0.8
 
                 self._add_history_entry("drift_linear_tails", new_params)
+
+        elif op == "volume_normalisation":
+                col = params.get("column")
+                if col not in self.df.columns:
+                    return
+
+                s = self.df[col]
+                if not np.issubdtype(s.dtype, np.number):
+                    return
+
+                direction = params.get("direction")           # 'M_to_m' or 'm_to_M'
+                system = params.get("system")                 # 'SI' or 'cgs-emu/Gaussian'
+                vol_value = params.get("volume_value")
+                vol_units = params.get("volume_units")
+
+                if vol_value is None or vol_value <= 0:
+                    raise ValueError("Sample volume must be positive.")
+
+                # Determine effective volume in the natural units of that system
+                # SI:   M [A/m],   m [A·m^2],   V [m^3]
+                # cgs:  M [emu/cm^3], m [emu],  V [cm^3]
+                if system == "SI":
+                    if vol_units == "m^3":
+                        V_eff = float(vol_value)
+                    elif vol_units == "cm^3":
+                        V_eff = float(vol_value) * 1.0e-6   # 1 cm^3 = 1e-6 m^3
+                    else:
+                        raise ValueError(f"Unsupported volume units '{vol_units}' for SI.")
+                elif system == "cgs-emu/Gaussian":
+                    if vol_units == "cm^3":
+                        V_eff = float(vol_value)
+                    elif vol_units == "m^3":
+                        V_eff = float(vol_value) * 1.0e6    # 1 m^3 = 1e6 cm^3
+                    else:
+                        raise ValueError(f"Unsupported volume units '{vol_units}' for cgs.")
+                else:
+                    raise ValueError(f"Unsupported unit system '{system}'.")
+
+                # Compute scale factor: m = M * V, M = m / V
+                if "scale_factor" in params and not record:
+                    # Replaying from history: use stored factor for reproducibility
+                    scale_factor = float(params["scale_factor"])
+                else:
+                    if direction == "M_to_m":
+                        scale_factor = V_eff
+                    elif direction == "m_to_M":
+                        scale_factor = 1.0 / V_eff
+                    else:
+                        raise ValueError(f"Unknown direction '{direction}' in volume_normalisation.")
+
+                # Apply scaling
+                arr = np.asarray(s.to_numpy(), float)
+                self.df[col] = arr * scale_factor
+
+                if record:
+                    # Store the scale_factor so replay is exact even if we later
+                    # change the volume logic.
+                    hist_params = dict(params)
+                    hist_params["scale_factor"] = float(scale_factor)
+                    self._add_history_entry("volume_normalisation", hist_params)
 
         elif op == "unit_convert":
             from_sys = params.get("from_system")
@@ -1671,6 +1829,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "copyLoopAct", None),
             getattr(self, "exportHistAct", None), 
             getattr(self, "unitConvertAct", None),
+            getattr(self, "volNormAct", None),
         ]:
             if act is not None:
                 act.setEnabled(enabled)
@@ -2149,6 +2308,57 @@ class MainWindow(QtWidgets.QMainWindow):
 
         noise_std = float(np.nanstd(all_res))
         return noise_std
+
+    def _open_volume_normalisation_dialog(self):
+        """Open the volume normalisation dialog and apply if accepted."""
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before volume normalisation.")
+            return
+
+        y_name = self.yCombo.currentText()
+        if not y_name or y_name not in self.df.columns:
+            QtWidgets.QMessageBox.warning(
+                self, "Select Y column",
+                "Select a Y column (moment or magnetisation) before volume normalisation."
+            )
+            return
+
+        dlg = VolumeNormalisationDialog(self)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        current_quantity, system, vol_value, vol_units = dlg.get_selection()
+
+        if vol_value <= 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid volume",
+                "Sample volume must be positive."
+            )
+            return
+
+        target_quantity = "m" if current_quantity == "M" else "M"
+        direction = "M_to_m" if current_quantity == "M" else "m_to_M"
+
+        params = {
+            "column": y_name,
+            "current_quantity": current_quantity,  # 'M' or 'm'
+            "target_quantity": target_quantity,
+            "direction": direction,                # 'M_to_m' or 'm_to_M'
+            "system": system,                      # 'SI' or 'cgs-emu/Gaussian'
+            "volume_value": vol_value,
+            "volume_units": vol_units,             # 'm^3' or 'cm^3'
+        }
+
+        try:
+            self._apply_operation("volume_normalisation", params, record=True)
+            self.status.showMessage(
+                f"Volume normalisation: {current_quantity} → {target_quantity} "
+                f"(V={vol_value:g} {vol_units}, system={system})"
+            )
+            self._replot()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Volume normalisation error", str(e))
+
 
     def _open_unit_convert_dialog(self):
         """Open the unit conversion dialog and apply conversion if accepted."""
