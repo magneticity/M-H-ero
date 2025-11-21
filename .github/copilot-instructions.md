@@ -1,55 +1,44 @@
-# SQUiiD Project - AI Agent Instructions
+# SQUiiD / M(H)ero — AI Agent Instructions (concise)
 
-## Project Overview
-SQUiiD is a Qt-based scientific data visualization application focused on magnetometry data viewing and analysis. The project uses PySide6 for the GUI and matplotlib for plotting capabilities.
+Quick summary
+- Main entry: `QT_test.py` (creates `MainWindow`, `PlotCanvas` and runs `main()`).
 
-## Key Components
+Big picture
+- Data flow: file -> `_read_table_auto(path)` -> pandas `DataFrame` (`original_df` / `df`) -> plotting via `PlotCanvas` and `_replot()`.
+- Transformations are applied through `_apply_operation(op, params)` and recorded in `history` for replay/undo.
+- Interactive preview modes (background/drift) work from snapshots: `_bg_df_before` and `_drift_df_before`.
 
-### GUI Architecture
-- Main application window (`MainWindow` class in `QT_test.py`)
-- Custom plotting canvas (`PlotCanvas` class) extending matplotlib's `FigureCanvasQTAgg`
-- Standard Qt components: menus, status bar, and file dialogs
+Key files & symbols to read first
+- `QT_test.py`: everything lives here (GUI, parsing, operations, history, plotting).
+- `_read_table_auto`: robust parsing heuristics (decimal commas, Fortran `D`, delimiter scoring, header autodetect).
+- `_apply_operation` and individual op names: `center_y`, `bg_linear_branches`, `drift_linear_tails`, `drift_linear_loopclosure`, `unit_convert`, `volume_normalisation`.
+- `_get_last_bg_info_for_current_axes`, `_rebuild_df_from_history`: history/replay semantics.
 
-### Data Handling
-- Uses pandas DataFrames for data management
-- Robust CSV/TSV/DAT file parsing with automatic delimiter detection
-- Supports various numeric formats including Fortran-style notation and decimal commas
-- Automatic detection of numeric columns for plotting
+Developer workflows
+- Run locally using bundled venv: `source env/bin/activate` then `python QT_test.py` (or run `env/bin/python QT_test.py`).
+- Debugging: run the script in the venv, use prints or inspect `self.history` after operations. UI errors surface via Qt message boxes.
+- No test harness present — add unit tests around pure functions (parsers, compute_* helpers) if needed.
 
-## Development Patterns
+Project-specific patterns & conventions
+- Numeric-column detection: `numpy.issubdtype(..., np.number)` — default plotting uses the first two numeric columns.
+- File parsing: `_read_table_auto` chooses a delimiter by scoring candidate separators, converts object columns with numeric-like strings to numeric (replacing `,` → `.`), and uses `on_bad_lines='skip'`.
+- Plotting: use `self.canvas.fig.canvas.draw_idle()` for redraws; interactive events via `canvas.mpl_connect` and `mpl_disconnect`.
+- History: every user action that mutates data should call `_add_history_entry(op, params)` so `_rebuild_df_from_history()` can replay operations deterministically.
 
-### File Parsing Strategy
-The `_read_table_auto` method implements sophisticated data file parsing with these key features:
-- Auto-detection of data section start (after headers/comments)
-- Smart delimiter detection (`,`, `\t`, `;`, spaces)
-- Support for explicit data markers (`[Data]`, `New Section: Section 0:`)
-- Handles inline comments and varying number formats
+Where to add features
+- To add a new data operation: implement logic in `_apply_operation(op, params)` and append `_add_history_entry` when recording; add a menu/action that calls the operation.
+- To add unit conversions, extend `_unit_conversion_factor_for_quantity` / `_unit_conversion_factors_axes`.
+- To change axis labels or semantics, update `_update_y_quantity_labels`, `_format_x_axis_label`, `_format_y_axis_label`.
 
-### GUI Updates
-- Plot updates use `draw_idle()` for efficient rendering
-- Status bar provides user feedback during operations
-- Error handling uses Qt's message boxes for user notification
+Run snippets
+```
+source env/bin/activate
+python QT_test.py
+```
 
-## Dependencies
-- PySide6: Qt GUI framework
-- matplotlib: Plotting library with Qt backend
-- pandas: Data manipulation
-- numpy: Numerical operations
+Notes for agents
+- Preserve user-visible semantics: history entries must remain stable (store numeric factors explicitly when computing conversions or normalisations).
+- Use existing helpers (compute_bg, compute_drift, compute_remanence, compute_coercivity) rather than reimplementing math.
+- Keep UI patterns consistent: use Qt dialogs (QDialog) for user input, signal/slot connections for actions, and snapshot/preview pattern for interactive edits.
 
-## Project-Specific Conventions
-1. Error Handling:
-   - GUI operations wrap exceptions in user-friendly dialog boxes
-   - Status bar updates reflect current operation state
-
-2. Data Processing:
-   - All file reading operations use UTF-8 with error ignoring
-   - Numeric columns are automatically coerced when possible
-   - Empty rows and columns are automatically dropped
-
-3. Plot Management:
-   - Plots are automatically sized using `tight_layout`
-   - Grid lines are added with 30% transparency
-   - First two numeric columns are used as default X/Y data
-
-## Key Files
-- `QT_test.py`: Main application file containing all core functionality
+If any of these areas are unclear or you want more examples (e.g., a small unit-test for `_read_table_auto`), tell me which part to expand.
