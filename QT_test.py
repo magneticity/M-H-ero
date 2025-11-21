@@ -653,6 +653,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "Declare what the X and Y axes represent (H/B, M/m) and their unit systems"
         )
         self.setAxesAct.triggered.connect(self._open_set_axes_dialog)
+        self.setAxesAct.setShortcut("Ctrl+U")
         process_menu.addAction(self.setAxesAct)
 
         # --- Centre about Y=0 ---
@@ -686,7 +687,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.unitConvertAct.setStatusTip(
             "Convert current field/magnetisation between SI and cgs/Gaussian units"
         )
-        self.unitConvertAct.setShortcut("Ctrl+U")
         self.unitConvertAct.triggered.connect(self._open_unit_convert_dialog)
         process_menu.addAction(self.unitConvertAct)
 
