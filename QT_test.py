@@ -316,17 +316,28 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("Hs+:", self.lblHsPlus)
         form.addRow("Hs−:", self.lblHsMinus)
 
-        form.addRow("Mr (mag):", self.lblMr)
-        form.addRow("Mr+:", self.lblMrPlus)
-        form.addRow("Mr−:", self.lblMrMinus)
+        # Value labels (numbers) - for M/m so we can change them dynamically
+        self.lblMr = QtWidgets.QLabel("—")
+        self.lblMrPlus = QtWidgets.QLabel("—")
+        self.lblMrMinus = QtWidgets.QLabel("—")
+        self.lblMs = QtWidgets.QLabel("—")
 
-        form.addRow("M\u209B (sat):", self.lblMs)      # Mₛ
-        form.addRow("BG slope:", self.lblBgSlope)
+        # Caption labels (left side) - for M/m so we can change them dynamically
+        self.lblMrCaption = QtWidgets.QLabel()
+        self.lblMrPlusCaption = QtWidgets.QLabel()
+        self.lblMrMinusCaption = QtWidgets.QLabel()
+        self.lblMsCaption = QtWidgets.QLabel()
+
+        form.addRow(self.lblMrCaption, self.lblMr)
+        form.addRow(self.lblMrPlusCaption, self.lblMrPlus)
+        form.addRow(self.lblMrMinusCaption, self.lblMrMinus)
+        form.addRow(self.lblMsCaption, self.lblMs)
 
         self.paramDock.setWidget(panel)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.paramDock)
+        self._update_y_quantity_labels()
 
-        # Menu
+        # --- Menu bar ---
         file_menu = self.menuBar().addMenu("&File")
         file_menu = self.menuBar().addMenu("&File")
 
@@ -512,6 +523,32 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Export error", str(e))
             self.status.showMessage("Error exporting history")
 
+    # Updates m/M label texts based on current Y quantity type
+    def _update_y_quantity_labels(self):
+        """
+        Update textual labels for Y-dependent parameters (Mr, Ms) based on
+        whether Y is magnetisation M, moment m, or unknown.
+        """
+        q = self.y_quantity_type
+
+        if q == "M":
+            # Magnetisation
+            self.lblMrCaption.setText("Mr (mag):")
+            self.lblMrPlusCaption.setText("Mr+:")
+            self.lblMrMinusCaption.setText("Mr−:")
+            self.lblMsCaption.setText("M\u209B (sat):")   # Ms with subscript s
+        elif q == "m":
+            # Magnetic moment
+            self.lblMrCaption.setText("mr (mag):")
+            self.lblMrPlusCaption.setText("mr+:")
+            self.lblMrMinusCaption.setText("mr−:")
+            self.lblMsCaption.setText("m\u209B (sat):")   # ms with subscript s
+        else:
+            # Unknown / ambiguous
+            self.lblMrCaption.setText("Rem (Y):")
+            self.lblMrPlusCaption.setText("Rem+ (Y):")
+            self.lblMrMinusCaption.setText("Rem− (Y):")
+            self.lblMsCaption.setText("Sat (Y):")
 
     # ---------- Plotting ----------
     def _replot(self):
@@ -2203,8 +2240,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         If scaled=True, return a COPY of its params with threshold and
         magnetisation-related values scaled into the *current* units,
-        taking into account any unit_convert operations that occurred
-        AFTER the BG fit.
+        taking into account any unit_convert and volume_normalisation
+        operations that occurred AFTER the BG fit.
 
         If scaled=False, return the raw params dict stored in history.
         """
@@ -2219,6 +2256,7 @@ class MainWindow(QtWidgets.QMainWindow):
         last_idx = None
         last_raw = None
 
+        # 1) Find the last BG op for these axes
         for i, entry in enumerate(self.history):
             if entry.get("op") == "bg_linear_branches":
                 params = entry.get("params", {})
@@ -2232,37 +2270,46 @@ class MainWindow(QtWidgets.QMainWindow):
         if not scaled:
             return last_raw
 
-        # Compute net unit conversion factors applied AFTER this BG op
+        # 2) Compute net scaling from *later* ops
         field_factor = 1.0
         mag_factor = 1.0
 
         for entry in self.history[last_idx + 1:]:
-            if entry.get("op") != "unit_convert":
-                continue
+            op = entry.get("op")
             p = entry.get("params", {})
-            # Use stored factors from that op
-            f_fac = p.get("field_factor", None)
-            m_fac = p.get("mag_factor", None)
 
-            # Only apply if that conversion touched our current axes
-            if p.get("field_column") == x_name and f_fac is not None:
-                field_factor *= float(f_fac)
-            if p.get("mag_column") == y_name and m_fac is not None:
-                mag_factor *= float(m_fac)
+            if op == "unit_convert":
+                # Use stored factors from that op
+                f_fac = p.get("field_factor", None)
+                m_fac = p.get("mag_factor", None)
 
-        # Build a scaled copy
-        scaled_params = dict(last_raw)  # shallow copy is fine since values are scalars
+                # Only apply if that conversion touched our current axes
+                if p.get("field_column") == x_name and f_fac is not None:
+                    field_factor *= float(f_fac)
+                if p.get("mag_column") == y_name and m_fac is not None:
+                    mag_factor *= float(m_fac)
 
-        # threshold is in field units
+            elif op == "volume_normalisation":
+                # Volume normalisation scales ONLY the Y column
+                if p.get("column") == y_name:
+                    sf = p.get("scale_factor", None)
+                    if sf is not None:
+                        mag_factor *= float(sf)
+
+        # 3) Build a scaled copy of the BG fit
+        scaled_params = dict(last_raw)  # shallow copy is fine (all scalars)
+
+        # Threshold is in field units
         if "threshold" in scaled_params and scaled_params["threshold"] is not None:
             scaled_params["threshold"] = scaled_params["threshold"] * field_factor
 
-        # M-related params (Ms etc.) are in mag units
+        # Magnetisation-related params (Ms etc.) are in mag units
         for key in ("m_bg", "m_pos", "m_neg", "b_pos", "b_neg"):
             if key in scaled_params and scaled_params[key] is not None:
                 scaled_params[key] = scaled_params[key] * mag_factor
 
         return scaled_params
+
 
 
     def _estimate_noise_from_bg_tails(self, x, y, last_bg, Ms):
@@ -2356,6 +2403,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"(V={vol_value:g} {vol_units}, system={system})"
             )
             self._replot()
+            self.y_quantity_type = target_quantity   # 'M' or 'm'
+            self.y_unit_system = system
+            self._update_y_quantity_labels()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Volume normalisation error", str(e))
 
@@ -2382,7 +2432,7 @@ class MainWindow(QtWidgets.QMainWindow):
         (from_sys, to_sys,
         convert_x, x_type_str,
         convert_y, y_type_str) = dlg.get_selection()
-
+        
         if from_sys == to_sys:
             self.status.showMessage("Unit conversion: source and target systems are the same.")
             return
@@ -2439,6 +2489,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"(X: {x_q or '-'}, Y: {y_q or '-'})"
             )
             self._replot()
+            if convert_y:
+                y_q = "M" if y_type_str == "Magnetisation M" else "m"
+                self.y_quantity_type = y_q
+                self.y_unit_system = to_sys
+                self._update_y_quantity_labels()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Unit conversion error", str(e))
 
@@ -2526,6 +2581,21 @@ class MainWindow(QtWidgets.QMainWindow):
         finite = np.isfinite(x) & np.isfinite(y)
         x = x[finite]
         y = y[finite]
+        q = self.y_quantity_type
+
+        if q == "M":
+            label_Ms = "Ms"
+            label_Mr_plus = "Mr+"
+            label_Mr_minus = "Mr−"
+        elif q == "m":
+            label_Ms = "ms"
+            label_Mr_plus = "mr+"
+            label_Mr_minus = "mr−"
+        else:
+            label_Ms = "Ys"
+            label_Mr_plus = "Yr+"
+            label_Mr_minus = "Yr−"
+
         if x.size < 2:
             return
 
@@ -2535,7 +2605,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if Mr_plus is not None:
             ax.scatter([0.0], [Mr_plus], s=30, marker="o")
             ax.annotate(
-                "Mr+",
+                label_Mr_plus,
                 xy=(0.0, Mr_plus),
                 xytext=(5, 5),
                 textcoords="offset points",
@@ -2545,7 +2615,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if Mr_minus is not None:
             ax.scatter([0.0], [Mr_minus], s=30, marker="o")
             ax.annotate(
-                "Mr−",
+                label_Mr_minus,
                 xy=(0.0, Mr_minus),
                 xytext=(5, -10),
                 textcoords="offset points",
@@ -2605,7 +2675,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ax.hlines(Ms,  x_min, x_max, linestyles="--")
         ax.hlines(-Ms, x_min, x_max, linestyles="--")
         ax.annotate(
-            "Ms",
+            label_Ms,
             xy=(x_min, Ms),
             xytext=(5, 5),
             textcoords="offset points",
