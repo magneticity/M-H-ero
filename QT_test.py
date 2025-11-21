@@ -2467,26 +2467,71 @@ class MainWindow(QtWidgets.QMainWindow):
         - Magnetisation M: SI uses A/m, cgs-emu uses emu/cm^3.
           1 emu/cm^3 = 1000 A/m  => 1 A/m = 1e-3 emu/cm^3
         """
-        if from_sys == to_sys:
+        # Supported systems: SI, cgs-emu/Gaussian, Heaviside-Lorentz (HL).
+        # We'll compute conversions by using SI <-> Gaussian factors (legacy)
+        # and applying the rationalization factors for HL where required.
+        def _canon(sys):
+            # Normalise common names (no aliasing to cgs-esu here)
+            return sys
+
+        from_sys_c = _canon(from_sys)
+        to_sys_c = _canon(to_sys)
+
+        if from_sys_c == to_sys_c:
             return 1.0, 1.0
 
-        if from_sys == "SI" and to_sys == "cgs-emu/Gaussian":
-            # SI → cgs
-            four_pi = 4.0 * np.pi
-            field_factor = four_pi / 1000.0      # A/m → Oe
-            mag_factor = 1.0e-3                  # A/m → emu/cm^3
-            return field_factor, mag_factor
+        four_pi = 4.0 * np.pi
 
-        if from_sys == "cgs-emu/Gaussian" and to_sys == "SI":
-            four_pi = 4.0 * np.pi
-            field_factor = 1000.0 / four_pi      # Oe → A/m
-            mag_factor = 1.0e3                   # emu/cm^3 → A/m
-            return field_factor, mag_factor
+        # Helper: Gaussian <-> HL scale for each quantity
+        def _gauss_to_hl_scale(q):
+            # Gaussian -> Heaviside-Lorentz:
+            #  - H, B : divide by sqrt(4π)
+            #  - M, m : multiply by sqrt(4π)
+            if q in ("H", "B"):
+                return 1.0 / np.sqrt(four_pi)
+            if q in ("M", "m"):
+                return np.sqrt(four_pi)
+            return 1.0
 
-        # For now, other systems are not implemented
+        # SI <-> Gaussian (existing behavior)
+        def si_to_gauss_factors():
+            return (four_pi / 1000.0, 1.0e-3)
+
+        def gauss_to_si_factors():
+            return (1000.0 / four_pi, 1.0e3)
+
+        # Case: SI <-> cgs-emu/Gaussian
+        if from_sys_c == "SI" and to_sys_c == "cgs-emu/Gaussian":
+            return si_to_gauss_factors()
+        if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "SI":
+            return gauss_to_si_factors()
+
+        # Case: SI <-> Heaviside-Lorentz: compose SI->Gaussian and Gaussian->HL
+        if from_sys_c == "SI" and to_sys_c == "Heaviside-Lorentz":
+            f_field, f_mag = si_to_gauss_factors()
+            # apply Gaussian->HL scale
+            f_field *= _gauss_to_hl_scale("H")
+            f_mag *= _gauss_to_hl_scale("M")
+            return f_field, f_mag
+
+        if from_sys_c == "Heaviside-Lorentz" and to_sys_c == "SI":
+            # HL -> Gaussian -> SI
+            f_field, f_mag = gauss_to_si_factors()
+            # HL -> Gaussian scale is inverse of Gaussian->HL
+            f_field /= _gauss_to_hl_scale("H")
+            f_mag /= _gauss_to_hl_scale("M")
+            return f_field, f_mag
+
+        # Case: Gaussian <-> Heaviside-Lorentz
+        if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "Heaviside-Lorentz":
+            return (_gauss_to_hl_scale("H"), _gauss_to_hl_scale("M"))
+
+        if from_sys_c == "Heaviside-Lorentz" and to_sys_c == "cgs-emu/Gaussian":
+            return (1.0 / _gauss_to_hl_scale("H"), 1.0 / _gauss_to_hl_scale("M"))
+
+        # For other combinations not yet implemented, raise a clear error.
         raise ValueError(
-            f"Unit conversion between '{from_sys}' and '{to_sys}' "
-            "is not implemented yet."
+            f"Unit conversion between '{from_sys}' and '{to_sys}' is not implemented yet."
         )
 
     def _update_parameters(self):
@@ -2814,16 +2859,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.showMessage("Unit conversion: source and target systems are the same.")
             return
 
-        # For now, only implement SI <-> cgs-emu/Gaussian
-        impl_sys = {"SI", "cgs-emu/Gaussian"}
+        # Implement SI <-> cgs-emu/Gaussian and Heaviside-Lorentz (rationalized Gaussian)
+        impl_sys = {"SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"}
         if from_sys not in impl_sys or to_sys not in impl_sys:
             QtWidgets.QMessageBox.information(
                 self,
                 "Not implemented",
                 (
-                    "Unit conversion is currently implemented only between "
-                    "SI and cgs-emu/Gaussian for H, B, M, and m.\n\n"
-                    "Other systems (cgs-esu, Heaviside-Lorentz) are not yet supported."
+                    "Unit conversion is currently implemented for SI, cgs-emu/Gaussian, "
+                    "and Heaviside-Lorentz (rationalized Gaussian) for H, B, M, and m.\n\n"
+                    "Other systems are not yet supported."
                 ),
             )
             return
@@ -2899,41 +2944,88 @@ class MainWindow(QtWidgets.QMainWindow):
         if quantity is None or from_sys == to_sys:
             return 1.0
 
-        # SI → cgs-emu/Gaussian
-        if from_sys == "SI" and to_sys == "cgs-emu/Gaussian":
+        # No aliasing to cgs-esu; support SI, cgs-emu/Gaussian, Heaviside-Lorentz.
+        def _canon(sys):
+            return sys
+
+        from_sys_c = _canon(from_sys)
+        to_sys_c = _canon(to_sys)
+
+        four_pi = 4.0 * np.pi
+
+        def _gauss_to_hl_scale(q):
+            if q in ("H", "B"):
+                return 1.0 / np.sqrt(four_pi)
+            if q in ("M", "m"):
+                return np.sqrt(four_pi)
+            return 1.0
+
+        # SI -> Gaussian (legacy factors)
+        if from_sys_c == "SI" and to_sys_c == "cgs-emu/Gaussian":
             if quantity == "H":
-                # H: A/m → Oe
-                # 1 Oe = 1000/(4π) A/m  → 1 A/m = 4π/1000 Oe
-                return 4.0 * np.pi / 1000.0
+                return four_pi / 1000.0
             elif quantity == "B":
-                # B: Tesla → Gauss
-                # 1 T = 10^4 G
                 return 1.0e4
             elif quantity == "M":
-                # M: A/m → emu/cm^3
-                # 1 emu/cm^3 = 1000 A/m → 1 A/m = 1e-3 emu/cm^3
                 return 1.0e-3
             elif quantity == "m":
-                # m: A·m^2 → emu
-                # 1 emu = 1e-3 A·m^2 → 1 A·m^2 = 1e3 emu
                 return 1.0e3
 
-        # cgs-emu/Gaussian → SI
-        if from_sys == "cgs-emu/Gaussian" and to_sys == "SI":
+        # Gaussian -> SI
+        if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "SI":
             if quantity == "H":
-                # Oe → A/m
-                return 1000.0 / (4.0 * np.pi)
+                return 1000.0 / four_pi
             elif quantity == "B":
-                # Gauss → Tesla
                 return 1.0e-4
             elif quantity == "M":
-                # emu/cm^3 → A/m
                 return 1.0e3
             elif quantity == "m":
-                # emu → A·m^2
                 return 1.0e-3
 
-        # Anything else not implemented yet
+        # SI <-> Heaviside-Lorentz via Gaussian
+        if from_sys_c == "SI" and to_sys_c == "Heaviside-Lorentz":
+            base = None
+            if quantity == "H":
+                base = four_pi / 1000.0
+            elif quantity == "B":
+                base = 1.0e4
+            elif quantity == "M":
+                base = 1.0e-3
+            elif quantity == "m":
+                base = 1.0e3
+            if base is None:
+                raise ValueError("Unknown quantity")
+            return base * _gauss_to_hl_scale(quantity)
+
+        if from_sys_c == "Heaviside-Lorentz" and to_sys_c == "SI":
+            # HL -> Gaussian -> SI
+            base = None
+            if quantity == "H":
+                base = 1000.0 / four_pi
+            elif quantity == "B":
+                base = 1.0e-4
+            elif quantity == "M":
+                base = 1.0e3
+            elif quantity == "m":
+                base = 1.0e-3
+            if base is None:
+                raise ValueError("Unknown quantity")
+            # HL->Gaussian scaling is inverse of Gaussian->HL
+            return base / _gauss_to_hl_scale(quantity)
+
+        # Gaussian <-> HL direct
+        if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "Heaviside-Lorentz":
+            if quantity in ("H", "B"):
+                return 1.0 / np.sqrt(four_pi)
+            if quantity in ("M", "m"):
+                return np.sqrt(four_pi)
+
+        if from_sys_c == "Heaviside-Lorentz" and to_sys_c == "cgs-emu/Gaussian":
+            if quantity in ("H", "B"):
+                return np.sqrt(four_pi)
+            if quantity in ("M", "m"):
+                return 1.0 / np.sqrt(four_pi)
+
         raise ValueError(
             f"Unit conversion for quantity '{quantity}' between '{from_sys}' "
             f"and '{to_sys}' is not implemented."
@@ -2960,11 +3052,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 return "A/m"
             elif s == "cgs-emu/Gaussian":
                 return "Oe"
+            elif s == "Heaviside-Lorentz":
+                return "Oe (HL)"
         elif q == "B":
             if s == "SI":
                 return "T"
             elif s == "cgs-emu/Gaussian":
                 return "G"
+            elif s == "Heaviside-Lorentz":
+                return "G (HL)"
 
         return None  # unknown
 
@@ -2978,11 +3074,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 return "A/m"
             elif s == "cgs-emu/Gaussian":
                 return "emu/cm^3"
+            elif s == "Heaviside-Lorentz":
+                return "emu/cm^3 (HL)"
         elif q == "m":
             if s == "SI":
                 return "A·m^2"
             elif s == "cgs-emu/Gaussian":
                 return "emu"
+            elif s == "Heaviside-Lorentz":
+                return "emu (HL)"
 
         return None  # unknown
 
