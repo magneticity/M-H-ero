@@ -82,6 +82,20 @@ class CalculationWindow(QtWidgets.QWidget):
         btn_bar.addWidget(self.clear1_btn)
         btn_bar.addWidget(self.clear2_btn)
         btn_bar.addWidget(self.swap_btn)
+        # Smoothing controls: enable smoothing, window size, isotonic regression
+        self.smooth_chk = QtWidgets.QCheckBox("Smooth virgin")
+        self.smooth_chk.setChecked(True)
+        self.smooth_win_spin = QtWidgets.QSpinBox()
+        self.smooth_win_spin.setRange(3, 201)
+        self.smooth_win_spin.setSingleStep(2)
+        self.smooth_win_spin.setValue(11)
+        self.smooth_win_spin.setToolTip("Smoothing window (odd integer)")
+        self.iso_chk = QtWidgets.QCheckBox("Isotonic")
+        self.iso_chk.setChecked(True)
+        btn_bar.addWidget(self.smooth_chk)
+        btn_bar.addWidget(QtWidgets.QLabel("Win:"))
+        btn_bar.addWidget(self.smooth_win_spin)
+        btn_bar.addWidget(self.iso_chk)
         btn_bar.addStretch(1)
         btn_bar.addWidget(self.diff_label)
         layout.addLayout(btn_bar)
@@ -89,6 +103,14 @@ class CalculationWindow(QtWidgets.QWidget):
         self.clear1_btn.clicked.connect(lambda: self._clear_slot(0))
         self.clear2_btn.clicked.connect(lambda: self._clear_slot(1))
         self.swap_btn.clicked.connect(self._swap_slots)
+        self.smooth_chk.toggled.connect(self._on_smoothing_changed)
+        self.smooth_win_spin.valueChanged.connect(self._on_smoothing_changed)
+        self.iso_chk.toggled.connect(self._on_smoothing_changed)
+
+        # internal smoothing state
+        self._smoothing_enabled = True
+        self._smoothing_window = 11
+        self._isotonic_enabled = True
 
     def _clear_slot(self, idx):
         ax = self.ax1 if idx == 0 else self.ax2
@@ -115,6 +137,17 @@ class CalculationWindow(QtWidgets.QWidget):
         self._update_diff_label()
         self.canvas.draw_idle()
 
+    def _on_smoothing_changed(self, _=None):
+        # Called when smoothing controls change: redraw and update labels
+        try:
+            self._smoothing_enabled = self.smooth_chk.isChecked()
+            self._smoothing_window = int(self.smooth_win_spin.value())
+            self._isotonic_enabled = self.iso_chk.isChecked()
+        except Exception:
+            pass
+        self._redraw_slots()
+        self.canvas.draw_idle()
+
     def _draw_slot(self, index):
         """Draw a single slot from self.raw_results[index]."""
         data = self.raw_results[index]
@@ -136,34 +169,108 @@ class CalculationWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Ensure we do not plot negative M on the virgin curve: clamp to zero
+        # Prepare displayed virgin curve: optionally smooth and enforce isotonicity
         try:
-            M_vir_plot = np.maximum(M_vir, 0.0)
+            M_disp = np.asarray(M_vir, dtype=float).copy()
+            H_disp = np.asarray(H_vir, dtype=float).copy()
+            if getattr(self, 'smooth_chk', None) is not None and self.smooth_chk.isChecked():
+                win = int(self.smooth_win_spin.value())
+                # ensure odd
+                if win % 2 == 0:
+                    win = max(3, win - 1)
+                if M_disp.size >= 3 and win >= 3:
+                    pad = win // 2
+                    M_pad = np.pad(M_disp, (pad, pad), mode='reflect')
+                    kernel = np.ones(win) / float(win)
+                    M_smooth = np.convolve(M_pad, kernel, mode='valid')
+                    M_disp = M_smooth
+            if getattr(self, 'iso_chk', None) is not None and self.iso_chk.isChecked():
+                # isotonic regression (PAV)
+                y = M_disp.astype(float)
+                n = y.size
+                if n > 0:
+                    levels = y.copy()
+                    weights = np.ones(n, dtype=float)
+                    i = 0
+                    while i < levels.size - 1:
+                        if levels[i] <= levels[i+1]:
+                            i += 1
+                            continue
+                        total = levels[i] * weights[i] + levels[i+1] * weights[i+1]
+                        w = weights[i] + weights[i+1]
+                        mean = total / w
+                        levels[i] = mean
+                        weights[i] = w
+                        levels = np.delete(levels, i+1)
+                        weights = np.delete(weights, i+1)
+                        if i > 0:
+                            i -= 1
+                    # expand
+                    try:
+                        M_disp = np.repeat(levels, weights.astype(int))
+                    except Exception:
+                        M_disp = np.interp(np.arange(n), np.linspace(0, n-1, levels.size), levels)
+            M_vir_plot = np.maximum(M_disp, 0.0)
         except Exception:
-            M_vir_plot = M_vir
+            M_vir_plot = np.maximum(M_vir, 0.0)
 
-        # Plot virgin curve (H_vir vs M_vir)
-        ax.plot(H_vir, M_vir_plot, linewidth=1.5, color='C1', label='virgin (bisected)')
+        # Prepare H values for plotting: ensure same length as M_vir_plot and non-negative
+        try:
+            H_disp = np.asarray(H_disp, dtype=float).copy()
+        except Exception:
+            H_disp = np.asarray(H_vir, dtype=float).copy()
+
+        # If smoothing/isotonic changed M length, resample H_disp to match M_disp length
+        if H_disp.size != M_vir_plot.size and H_disp.size >= 2 and M_vir_plot.size >= 2:
+            xp = np.linspace(0.0, 1.0, H_disp.size)
+            xnew = np.linspace(0.0, 1.0, M_vir_plot.size)
+            try:
+                H_disp = np.interp(xnew, xp, H_disp)
+            except Exception:
+                H_disp = np.resize(H_disp, M_vir_plot.size)
+
+        # Clip H to non-negative for display/integration
+        H_disp_plot = np.maximum(H_disp, 0.0)
+
+        # Plot virgin curve (H_disp_plot vs M_vir_plot)
+        ax.plot(H_disp_plot, M_vir_plot, linewidth=1.5, color='C1', label='virgin (bisected)')
 
         # Shade area between H and 0 for M in 0..Ms using horizontal fill
         Ms = float(np.nanmax(M_vir_plot) if M_vir_plot.size else 0.0)
         order = np.argsort(M_vir_plot)
         M_sorted = M_vir_plot[order]
-        H_sorted = H_vir[order]
-        # Use non-negative H for area shading so we always shade from H=0 → H_positive
-        H_sorted_pos = np.maximum(H_sorted, 0.0)
+        H_sorted = H_disp_plot[order]
         mask = (M_sorted >= 0) & (M_sorted <= Ms)
         if mask.any():
-            ax.fill_betweenx(M_sorted[mask], 0.0, H_sorted_pos[mask], color='C1', alpha=0.2)
+            ax.fill_betweenx(M_sorted[mask], 0.0, H_sorted[mask], color='C1', alpha=0.2)
 
         ax.set_xlabel('H')
         ax.set_ylabel('M')
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best')
 
-        # Annotate area
-        ax.annotate(f'Area = {area:.6g} (units: H·M)', xy=(0.05, 0.95), xycoords='axes fraction',
+        # If smoothing/isotonic applied, recompute displayed area
+        try:
+            Ms = float(np.nanmax(M_vir_plot) if M_vir_plot.size else 0.0)
+            order = np.argsort(M_vir_plot)
+            M_sorted = M_vir_plot[order]
+            H_sorted = H_disp_plot[order]
+            mask = (M_sorted >= 0) & (M_sorted <= Ms)
+            if mask.sum() >= 2:
+                applied_area = float(np.trapz(np.maximum(H_sorted[mask], 0.0), M_sorted[mask]))
+            else:
+                applied_area = area
+        except Exception:
+            applied_area = area
+
+        ax.annotate(f'Area = {applied_area:.6g} (units: H·M)', xy=(0.05, 0.95), xycoords='axes fraction',
                     fontsize=9, verticalalignment='top')
+
+        # update stored displayed area (without overwriting original raw value)
+        try:
+            self.areas[index] = applied_area
+        except Exception:
+            pass
 
         # Autoscale view so limits update nicely
         ax.relim()
@@ -175,6 +282,8 @@ class CalculationWindow(QtWidgets.QWidget):
         self._draw_slot(0)
         # draw right
         self._draw_slot(1)
+        # Update diff label after redraw so smoothed areas are reflected
+        self._update_diff_label()
 
     def apply_axis_swap(self):
         """Apply an axes swap to stored results: swap H<->M and invert area sign.
@@ -210,16 +319,92 @@ class CalculationWindow(QtWidgets.QWidget):
     def _update_diff_label(self):
         # Show a signed difference: left (slot 1) minus right (slot 2).
         # This ensures swapping the two slots will flip the sign of Δ area.
-        if self.areas[0] is not None and self.areas[1] is not None:
-            try:
-                diff = float(self.areas[0]) - float(self.areas[1])
-                self.diff_label.setText(f"Δ area: {diff:.6g}")
-            except Exception:
-                self.diff_label.setText("Δ area: —")
-        else:
+        if self.areas[0] is None or self.areas[1] is None:
             self.diff_label.setText("Δ area: —")
+            return
 
-    def plot_result(self, index, H, M, H_vir, M_vir, area, label, x_label=None, y_label=None, area_units=None):
+        try:
+            diff = float(self.areas[0]) - float(self.areas[1])
+        except Exception:
+            self.diff_label.setText("Δ area: —")
+            return
+
+        # Try to compute a physical energy (K_eff or E_a) when unit metadata is present
+        meta0 = self.raw_results[0] or {}
+        meta1 = self.raw_results[1] or {}
+        xq0 = meta0.get('xq')
+        xsys0 = meta0.get('xsys')
+        yq0 = meta0.get('yq')
+        ysys0 = meta0.get('ysys')
+
+        xq1 = meta1.get('xq')
+        xsys1 = meta1.get('xsys')
+        yq1 = meta1.get('yq')
+        ysys1 = meta1.get('ysys')
+
+        # If metadata is missing or inconsistent between slots, show only area difference
+        meta_ok = all([xq0 == xq1, yq0 == yq1, xsys0 == xsys1, ysys0 == ysys1]) and (xq0 is not None and yq0 is not None)
+
+        out_lines = []
+        out_lines.append(f"Δ area: {diff:.6g}")
+
+        if not meta_ok:
+            out_lines.append("(units: incompatible or unspecified)")
+            self.diff_label.setText("\n".join(out_lines))
+            return
+
+        # Units handling
+        try:
+            import math
+            mu0 = 4.0 * math.pi * 1e-7  # vacuum permeability H/m
+        except Exception:
+            mu0 = 4.0 * 3.141592653589793 * 1e-7
+
+        # cgs (emu) case: areas are already in erg/cm^3 (for H·M) or erg (for H·m)
+        if xsys0 == 'cgs-emu/Gaussian':
+            if xq0 == 'H' and yq0 == 'M':
+                # energy density K_eff (erg/cm^3)
+                K = diff
+                out_lines.append(f"K_eff = {K:.6g} erg/cm³")
+            elif yq0 == 'm':
+                # energy E_a (erg)
+                E = diff
+                out_lines.append(f"E_a = {E:.6g} erg")
+            else:
+                out_lines.append("(units: cgs, unknown quantity pairing)")
+        elif xsys0 == 'SI':
+            # SI: multiply area by mu0 to get energy (J/m^3 for density, J for energy)
+            energy = mu0 * diff
+            if xq0 == 'H' and yq0 == 'M':
+                out_lines.append(f"K_eff = {energy:.6g} J/m³")
+            elif yq0 == 'm':
+                out_lines.append(f"E_a = {energy:.6g} J")
+            else:
+                out_lines.append("(units: SI, unknown quantity pairing)")
+        elif xsys0 == 'Heaviside-Lorentz':
+            # Heaviside-Lorentz is the rationalized Gaussian system.
+            # Using the relations H_HL = H_G / sqrt(4π), M_HL = M_G * sqrt(4π)
+            # gives the same numeric ∫ H dM as Gaussian, so `diff` is
+            # directly comparable to the cgs result (erg/cm³ or erg).
+            if xq0 == 'H' and yq0 == 'M':
+                # Report both cgs (erg/cm^3) and converted SI (J/m^3)
+                K_cgs = diff
+                K_si = 0.1 * diff  # 1 erg/cm^3 = 0.1 J/m^3
+                out_lines.append(f"K_eff = {K_cgs:.6g} erg/cm³ ≈ {K_si:.6g} J/m³ (Heaviside–Lorentz)")
+            elif yq0 == 'm':
+                E_cgs = diff
+                E_si = 0.1 * diff
+                out_lines.append(f"E_a = {E_cgs:.6g} erg ≈ {E_si:.6g} J (Heaviside–Lorentz)")
+            else:
+                out_lines.append("(units: HL, unknown quantity pairing)")
+        else:
+            out_lines.append("(units: unspecified)")
+
+        self.diff_label.setText("\n".join(out_lines))
+
+    def plot_result(self, index, H, M, H_vir, M_vir, area, label,
+                    x_label=None, y_label=None, area_units=None,
+                    xq=None, xsys=None, yq=None, ysys=None):
         """Plot results into subplot `index` (0 or 1), with optional axis and area units labels."""
         if index not in (0, 1):
             index = 0
@@ -227,6 +412,7 @@ class CalculationWindow(QtWidgets.QWidget):
         ax_target = self.ax1 if index == 0 else self.ax2
 
         try:
+            # Store axis/units metadata if passed in kwargs (fall back to None)
             self.raw_results[index] = {
                 'H': np.asarray(H),
                 'M': np.asarray(M),
@@ -234,6 +420,10 @@ class CalculationWindow(QtWidgets.QWidget):
                 'M_vir': np.asarray(M_vir),
                 'area': float(area),
                 'label': label,
+                'xq': xq,
+                'xsys': xsys,
+                'yq': yq,
+                'ysys': ysys,
             }
         except Exception:
             self.raw_results[index] = None
@@ -376,26 +566,84 @@ def build_virgin_curve(H_in, M_in, n_grid=2000):
 
     H_vir = H_grid[valid]
     M_vir = M_vir[valid]
-
-    # Restrict the virgin curve to the positive-H, positive-M quadrant.
-    # The anisotropy area calculation should only consider M >= 0 and H >= 0.
+    # Smooth and enforce monotonicity on the virgin curve at high field to
+    # avoid zig-zags that make the area unstable. Strategy:
+    # 1) Ensure an explicit (0,0) anchor exists (so integration starts at zero)
+    # 2) Optionally smooth M_vir with a small moving-average filter
+    # 3) Apply isotonic regression (PAV) to enforce non-decreasing M with H
     try:
-        # If H=0 is present, ensure the corresponding M is non-negative
-        idx0 = np.where(np.isclose(H_vir, 0.0, atol=1e-12))[0]
+        # Ensure anchor at (0,0)
+        idx0 = np.where(np.isclose(H_vir, 0.0, atol=1e-9))[0]
         if idx0.size > 0:
             M_vir[idx0[0]] = max(0.0, float(M_vir[idx0[0]]))
-
-        # Ensure we include an explicit (0,0) anchor so integration starts from zero
-        if not np.any(np.isclose(H_vir, 0.0, atol=1e-12)):
+        else:
             H_vir = np.concatenate(([0.0], H_vir))
             M_vir = np.concatenate(([0.0], M_vir))
 
-        # Keep only points in the positive quadrant (H >= 0 AND M >= 0)
+        # Keep only non-negative quadrant (we integrate M>=0, H>=0)
         pos_mask = (H_vir >= 0.0) & (M_vir >= 0.0)
         H_vir = H_vir[pos_mask]
         M_vir = M_vir[pos_mask]
+
+        # If too few points after filtering, fail early
+        if H_vir.size < 2:
+            raise ValueError("Virgin curve contains insufficient positive-quadrant points")
+
+        # Smooth M_vir with a small moving average to suppress local zig-zags.
+        # Window should be odd and relatively small compared to n_grid.
+        win = 11
+        if M_vir.size >= 3:
+            win = min(win, M_vir.size if M_vir.size % 2 == 1 else M_vir.size - 1)
+            if win >= 3:
+                pad = win // 2
+                M_pad = np.pad(M_vir, (pad, pad), mode='reflect')
+                kernel = np.ones(win) / float(win)
+                M_smooth = np.convolve(M_pad, kernel, mode='valid')
+                M_vir = M_smooth
+
+        # Isotonic regression (PAV) to enforce non-decreasing M vs H
+        def _isotonic_regression(y):
+            y = np.asarray(y, dtype=float)
+            n = y.size
+            if n == 0:
+                return y
+            # Initialize levels and weights
+            levels = y.copy()
+            weights = np.ones(n, dtype=float)
+            i = 0
+            while i < levels.size - 1:
+                if levels[i] <= levels[i+1]:
+                    i += 1
+                    continue
+                # merge blocks i and i+1
+                total = levels[i] * weights[i] + levels[i+1] * weights[i+1]
+                w = weights[i] + weights[i+1]
+                mean = total / w
+                levels[i] = mean
+                weights[i] = w
+                # remove i+1
+                levels = np.delete(levels, i+1)
+                weights = np.delete(weights, i+1)
+                if i > 0:
+                    i -= 1
+            # expand levels back to original length
+            out = np.repeat(levels, weights.astype(int))
+            # if rounding removed/changed length, fallback to repeating means
+            if out.size != n:
+                # evenly interpolate back to original length
+                out = np.interp(np.arange(n), np.linspace(0, n-1, out.size), out)
+            return out
+
+        try:
+            M_iso = _isotonic_regression(M_vir)
+            # Numerical cleanup: ensure non-negative and same length
+            M_vir = np.maximum(M_iso, 0.0)
+        except Exception:
+            # If isotonic fails, keep smoothed M_vir
+            M_vir = np.maximum(M_vir, 0.0)
+
     except Exception:
-        # On any error, fall back to the unfiltered arrays (caller will handle failures)
+        # On any error, fall back to original arrays (caller handles failures)
         pass
 
     # Require at least two points to form a valid virgin curve in the positive quadrant
@@ -698,11 +946,21 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         self.systemCombo.addItems(["SI", "cgs-emu/Gaussian"])
         form.addRow("Unit system for Y:", self.systemCombo)
 
-        # Volume input
-        self.volSpin = QtWidgets.QDoubleSpinBox()
-        self.volSpin.setDecimals(6)
-        self.volSpin.setRange(0.0, 1e30)
-        self.volSpin.setValue(1.0)
+        # Volume input: use a QLineEdit with a regex validator accepting
+        # decimal and scientific notation (e.g. 3e-6), since QDoubleSpinBox
+        # may not accept exponent entry on all platforms/locales.
+        self.volSpin = QtWidgets.QLineEdit()
+        self.volSpin.setPlaceholderText("1.0")
+        self.volSpin.setText("1.0")
+
+        # Validator for floats with optional exponent
+        regex = r'^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$'
+        try:
+            validator = QtGui.QRegularExpressionValidator(QtCore.QRegularExpression(regex))
+            self.volSpin.setValidator(validator)
+        except Exception:
+            # Fall back: no validator if not available
+            pass
 
         self.volUnitsCombo = QtWidgets.QComboBox()
         self.volUnitsCombo.addItems(["m^3", "cm^3"])
@@ -765,7 +1023,11 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         """
         current_quantity = "M" if self.radioY_M.isChecked() else "m"
         system = self.systemCombo.currentText()
-        volume_value = float(self.volSpin.value())
+        # Parse volume value from the line edit; accept scientific notation
+        try:
+            volume_value = float(self.volSpin.text())
+        except Exception:
+            volume_value = 1.0
         volume_units = self.volUnitsCombo.currentText()
         return current_quantity, system, volume_value, volume_units
 
@@ -787,7 +1049,10 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         """
         current_quantity = "M" if self.radioY_M.isChecked() else "m"
         system = self.systemCombo.currentText()
-        volume_value = float(self.volSpin.value())
+        try:
+            volume_value = float(self.volSpin.text())
+        except Exception:
+            volume_value = 1.0
         volume_units = self.volUnitsCombo.currentText()
         return current_quantity, system, volume_value, volume_units
 
@@ -1534,7 +1799,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.calc_window = CalculationWindow(None)
 
         idx = 0 if self.calc_window.areas[0] is None else 1
-        self.calc_window.plot_result(idx, H, M, H_vir, M_vir, area, label, x_label=x_label, y_label=y_label, area_units=area_units)
+        self.calc_window.plot_result(
+            idx, H, M, H_vir, M_vir, area, label,
+            x_label=x_label, y_label=y_label, area_units=area_units,
+            xq=self.x_quantity_type, xsys=self.x_unit_system,
+            yq=self.y_quantity_type, ysys=self.y_unit_system,
+        )
         self.calc_window.show()
         self.calc_window.raise_()
         self.status.showMessage(f"Calculated anisotropy area = {area:.6g} (plotted in slot {idx+1})")
