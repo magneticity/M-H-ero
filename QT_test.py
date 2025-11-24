@@ -1,5 +1,6 @@
 import sys
 import io
+import os
 import pandas as pd
 import matplotlib
 import numpy as np
@@ -28,6 +29,402 @@ class PlotCanvas(FigureCanvas):
             self.ax.set_title(title)
         self.ax.grid(True, alpha=0.3)
         self.fig.canvas.draw_idle()
+
+
+class CalculationWindow(QtWidgets.QWidget):
+    """Window showing two subplots for anisotropy-area calculations.
+
+    Usage: create once and call `plot_result(index, H, M, H_vir, M_vir, area, label)`
+    where `index` is 0 or 1 to assign to first or second subplot.
+    The window persists between file loads; the first subplot is not cleared
+    automatically so users can compute a second sample and compare.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FC
+        from matplotlib.figure import Figure
+
+        self.setWindowTitle("Anisotropy energy (area method)")
+        # Ensure this widget is a top-level window (so .show() creates a separate window)
+        try:
+            self.setWindowFlag(QtCore.Qt.Window, True)
+        except Exception:
+            pass
+        self.fig = Figure(tight_layout=True, figsize=(10, 4))
+        self.canvas = FigureCanvas(self.fig)
+        # Add matplotlib navigation toolbar for zoom/pan/home controls
+        try:
+            self.toolbar = NavigationToolbar(self.canvas, self)
+        except Exception:
+            self.toolbar = None
+        self.ax1 = self.fig.add_subplot(1, 2, 1)
+        self.ax2 = self.fig.add_subplot(1, 2, 2)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        # toolbar (if available) goes above the canvas
+        if getattr(self, 'toolbar', None) is not None:
+            layout.addWidget(self.toolbar)
+        layout.addWidget(self.canvas)
+
+        # store last areas and labels
+        self.areas = [None, None]
+        self.labels = [None, None]
+        # store raw results so we can redraw / swap reliably
+        # each entry: dict with keys 'H','M','H_vir','M_vir','area','label'
+        self.raw_results = [None, None]
+
+        # Controls: clear buttons, swap, diff label
+        btn_bar = QtWidgets.QHBoxLayout()
+        self.clear1_btn = QtWidgets.QPushButton("Clear 1")
+        self.clear2_btn = QtWidgets.QPushButton("Clear 2")
+        self.swap_btn = QtWidgets.QPushButton("Swap")
+        self.diff_label = QtWidgets.QLabel("Δ area: —")
+        btn_bar.addWidget(self.clear1_btn)
+        btn_bar.addWidget(self.clear2_btn)
+        btn_bar.addWidget(self.swap_btn)
+        btn_bar.addStretch(1)
+        btn_bar.addWidget(self.diff_label)
+        layout.addLayout(btn_bar)
+
+        self.clear1_btn.clicked.connect(lambda: self._clear_slot(0))
+        self.clear2_btn.clicked.connect(lambda: self._clear_slot(1))
+        self.swap_btn.clicked.connect(self._swap_slots)
+
+    def _clear_slot(self, idx):
+        ax = self.ax1 if idx == 0 else self.ax2
+        ax.clear()
+        if idx == 0:
+            self.areas[0] = None
+            self.labels[0] = None
+            self.raw_results[0] = None
+        else:
+            self.areas[1] = None
+            self.labels[1] = None
+            self.raw_results[1] = None
+        self.diff_label.setText("Δ area: —")
+        self.canvas.draw_idle()
+
+    def _swap_slots(self):
+        # swap stored results and redraw both slots so axes limits update correctly
+        self.areas[0], self.areas[1] = self.areas[1], self.areas[0]
+        self.labels[0], self.labels[1] = self.labels[1], self.labels[0]
+        self.raw_results[0], self.raw_results[1] = self.raw_results[1], self.raw_results[0]
+
+        # redraw both slots from stored data
+        self._redraw_slots()
+        self._update_diff_label()
+        self.canvas.draw_idle()
+
+    def _draw_slot(self, index):
+        """Draw a single slot from self.raw_results[index]."""
+        data = self.raw_results[index]
+        ax = self.ax1 if index == 0 else self.ax2
+        ax.clear()
+        if data is None:
+            return
+
+        H = np.asarray(data['H'])
+        M = np.asarray(data['M'])
+        H_vir = np.asarray(data['H_vir'])
+        M_vir = np.asarray(data['M_vir'])
+        area = data.get('area', 0.0)
+        label = data.get('label', None)
+
+        # Plot faint original loop (H on x, M on y)
+        try:
+            ax.plot(H, M, linewidth=0.8, color='0.6', alpha=0.5, label='raw loop')
+        except Exception:
+            pass
+
+        # Ensure we do not plot negative M on the virgin curve: clamp to zero
+        try:
+            M_vir_plot = np.maximum(M_vir, 0.0)
+        except Exception:
+            M_vir_plot = M_vir
+
+        # Plot virgin curve (H_vir vs M_vir)
+        ax.plot(H_vir, M_vir_plot, linewidth=1.5, color='C1', label='virgin (bisected)')
+
+        # Shade area between H and 0 for M in 0..Ms using horizontal fill
+        Ms = float(np.nanmax(M_vir_plot) if M_vir_plot.size else 0.0)
+        order = np.argsort(M_vir_plot)
+        M_sorted = M_vir_plot[order]
+        H_sorted = H_vir[order]
+        # Use non-negative H for area shading so we always shade from H=0 → H_positive
+        H_sorted_pos = np.maximum(H_sorted, 0.0)
+        mask = (M_sorted >= 0) & (M_sorted <= Ms)
+        if mask.any():
+            ax.fill_betweenx(M_sorted[mask], 0.0, H_sorted_pos[mask], color='C1', alpha=0.2)
+
+        ax.set_xlabel('H')
+        ax.set_ylabel('M')
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='best')
+
+        # Annotate area
+        ax.annotate(f'Area = {area:.6g} (units: H·M)', xy=(0.05, 0.95), xycoords='axes fraction',
+                    fontsize=9, verticalalignment='top')
+
+        # Autoscale view so limits update nicely
+        ax.relim()
+        ax.autoscale_view()
+
+    def _redraw_slots(self):
+        """Redraw both slots according to stored raw_results."""
+        # draw left
+        self._draw_slot(0)
+        # draw right
+        self._draw_slot(1)
+
+    def apply_axis_swap(self):
+        """Apply an axes swap to stored results: swap H<->M and invert area sign.
+
+        This is called when the main window swaps X/Y so previously computed
+        results remain consistent with the new axes orientation.
+        """
+        for i in (0, 1):
+            data = self.raw_results[i]
+            if data is None:
+                continue
+            try:
+                # swap arrays
+                H = np.asarray(data.get('H', []))
+                M = np.asarray(data.get('M', []))
+                H_vir = np.asarray(data.get('H_vir', []))
+                M_vir = np.asarray(data.get('M_vir', []))
+
+                data['H'], data['M'] = M, H
+                data['H_vir'], data['M_vir'] = M_vir, H_vir
+
+                # invert area sign
+                if 'area' in data and data['area'] is not None:
+                    data['area'] = -float(data['area'])
+                    self.areas[i] = -self.areas[i] if self.areas[i] is not None else None
+            except Exception:
+                # best-effort; skip on error
+                continue
+
+        # redraw with swapped axes
+        self._redraw_slots()
+
+    def _update_diff_label(self):
+        # Show a signed difference: left (slot 1) minus right (slot 2).
+        # This ensures swapping the two slots will flip the sign of Δ area.
+        if self.areas[0] is not None and self.areas[1] is not None:
+            try:
+                diff = float(self.areas[0]) - float(self.areas[1])
+                self.diff_label.setText(f"Δ area: {diff:.6g}")
+            except Exception:
+                self.diff_label.setText("Δ area: —")
+        else:
+            self.diff_label.setText("Δ area: —")
+
+    def plot_result(self, index, H, M, H_vir, M_vir, area, label, x_label=None, y_label=None, area_units=None):
+        """Plot results into subplot `index` (0 or 1), with optional axis and area units labels."""
+        if index not in (0, 1):
+            index = 0
+
+        ax_target = self.ax1 if index == 0 else self.ax2
+
+        try:
+            self.raw_results[index] = {
+                'H': np.asarray(H),
+                'M': np.asarray(M),
+                'H_vir': np.asarray(H_vir),
+                'M_vir': np.asarray(M_vir),
+                'area': float(area),
+                'label': label,
+            }
+        except Exception:
+            self.raw_results[index] = None
+
+        ax_target.clear()
+
+        try:
+            M_vir_plot = np.maximum(M_vir, 0.0)
+        except Exception:
+            M_vir_plot = M_vir
+
+        order = np.argsort(M_vir_plot)
+        M_sorted = M_vir_plot[order]
+        H_sorted = H_vir[order]
+
+        try:
+            ax_target.plot(H, M, linewidth=0.8, color='0.6', alpha=0.5, label='raw loop')
+        except Exception:
+            pass
+
+        H_sorted_pos = np.maximum(H_sorted, 0.0)
+        ax_target.plot(H_sorted_pos, M_sorted, linewidth=1.5, color='C1')
+
+        Ms = float(np.nanmax(M_vir_plot) if M_vir_plot.size else 0.0)
+        mask = (M_sorted >= 0) & (M_sorted <= Ms)
+        if mask.any():
+            ax_target.fill_betweenx(M_sorted[mask], 0.0, H_sorted_pos[mask], color='C1', alpha=0.2)
+
+        # Use provided axis labels if given, else fallback
+        ax_target.set_xlabel(x_label if x_label else 'H')
+        ax_target.set_ylabel(y_label if y_label else 'M')
+        ax_target.grid(True, alpha=0.3)
+
+        if index == 0:
+            self.ax2.clear()
+            self.areas[1] = None
+            self.labels[1] = None
+            self.raw_results[1] = None
+
+        # Annotate area with units if provided
+        area_units_str = f" ({area_units})" if area_units else ""
+        ax_target.annotate(f'Area = {area:.6g}{area_units_str}', xy=(0.05, 0.95), xycoords='axes fraction',
+                           fontsize=9, verticalalignment='top')
+
+        self.areas[index] = area
+        self.labels[index] = label
+
+        self._update_diff_label()
+        try:
+            ax_target.relim()
+            ax_target.autoscale_view()
+        except Exception:
+            pass
+        self.canvas.draw_idle()
+
+
+def _smooth_sign(x, window=5):
+    """Return a smoothed sign of the derivative for branch detection.
+
+    Small helper used by branch detection to reduce noise-induced flips.
+    """
+    if len(x) < 2:
+        return np.array([1])
+    d = np.diff(x)
+    # simple moving average on derivative magnitude
+    w = np.ones(window) / float(window)
+    dpad = np.pad(d, (window//2, window-1-window//2), mode='edge')
+    ds = np.convolve(dpad, w, mode='valid')
+    s = np.sign(ds)
+    # replace zeros with previous non-zero or 1
+    for i in range(len(s)):
+        if s[i] == 0:
+            s[i] = s[i-1] if i > 0 else 1
+    return s
+
+
+def build_virgin_curve(H_in, M_in, n_grid=2000):
+    """Construct a virgin curve by bisecting increasing and decreasing branches.
+
+    Returns (H_vir, M_vir, Ms_val).
+    """
+    H = np.asarray(H_in, dtype=float)
+    M = np.asarray(M_in, dtype=float)
+    finite = np.isfinite(H) & np.isfinite(M)
+    H = H[finite]
+    M = M[finite]
+
+    if H.size < 3:
+        raise ValueError("Not enough points to build virgin curve")
+
+    # Detect monotonic segments using smoothed derivative sign
+    s = _smooth_sign(H, window=7)
+    # Expand to length of H by repeating last sign
+    if s.size < H.size:
+        s = np.pad(s, (0, H.size - s.size), mode='edge')
+
+    incr_mask = s >= 0
+    decr_mask = ~incr_mask
+
+    H_incr = H[incr_mask]
+    M_incr = M[incr_mask]
+    H_decr = H[decr_mask]
+    M_decr = M[decr_mask]
+
+    # Require at least 2 points in each; fallback to split-by-H if not
+    if H_incr.size < 2 or H_decr.size < 2:
+        order = np.argsort(H)
+        Hs = H[order]
+        Ms = M[order]
+        mid = len(Hs) // 2
+        H_incr, M_incr = Hs[:mid], Ms[:mid]
+        H_decr, M_decr = Hs[mid:], Ms[mid:]
+
+    # Sort branch arrays
+    si = np.argsort(H_incr)
+    sd = np.argsort(H_decr)
+    H_incr_s, M_incr_s = H_incr[si], M_incr[si]
+    H_decr_s, M_decr_s = H_decr[sd], M_decr[sd]
+
+    # define grid over overlapping H region (if possible)
+    H_min = max(np.nanmin(H_incr_s), np.nanmin(H_decr_s))
+    H_max = min(np.nanmax(H_incr_s), np.nanmax(H_decr_s))
+    if not np.isfinite(H_min) or not np.isfinite(H_max) or H_max <= H_min:
+        H_min, H_max = float(np.nanmin(H)), float(np.nanmax(H))
+
+    H_grid = np.linspace(H_min, H_max, n_grid)
+
+    M_incr_grid = np.interp(H_grid, H_incr_s, M_incr_s, left=np.nan, right=np.nan)
+    M_decr_grid = np.interp(H_grid, H_decr_s, M_decr_s, left=np.nan, right=np.nan)
+
+    M_vir = np.nanmean(np.vstack([M_incr_grid, M_decr_grid]), axis=0)
+    mask_incr_valid = ~np.isnan(M_incr_grid)
+    mask_decr_valid = ~np.isnan(M_decr_grid)
+    M_vir[mask_incr_valid & ~mask_decr_valid] = M_incr_grid[mask_incr_valid & ~mask_decr_valid]
+    M_vir[~mask_incr_valid & mask_decr_valid] = M_decr_grid[~mask_incr_valid & mask_decr_valid]
+
+    valid = np.isfinite(M_vir) & np.isfinite(H_grid)
+    if valid.sum() < 2:
+        raise ValueError("Virgin curve construction failed")
+
+    H_vir = H_grid[valid]
+    M_vir = M_vir[valid]
+
+    # Restrict the virgin curve to the positive-H, positive-M quadrant.
+    # The anisotropy area calculation should only consider M >= 0 and H >= 0.
+    try:
+        # If H=0 is present, ensure the corresponding M is non-negative
+        idx0 = np.where(np.isclose(H_vir, 0.0, atol=1e-12))[0]
+        if idx0.size > 0:
+            M_vir[idx0[0]] = max(0.0, float(M_vir[idx0[0]]))
+
+        # Ensure we include an explicit (0,0) anchor so integration starts from zero
+        if not np.any(np.isclose(H_vir, 0.0, atol=1e-12)):
+            H_vir = np.concatenate(([0.0], H_vir))
+            M_vir = np.concatenate(([0.0], M_vir))
+
+        # Keep only points in the positive quadrant (H >= 0 AND M >= 0)
+        pos_mask = (H_vir >= 0.0) & (M_vir >= 0.0)
+        H_vir = H_vir[pos_mask]
+        M_vir = M_vir[pos_mask]
+    except Exception:
+        # On any error, fall back to the unfiltered arrays (caller will handle failures)
+        pass
+
+    # Require at least two points to form a valid virgin curve in the positive quadrant
+    if H_vir.size < 2 or M_vir.size < 2:
+        raise ValueError("Virgin curve contains insufficient points in positive H/M quadrant")
+
+    Ms_val = float(np.nanmax(M_vir))
+    return H_vir, M_vir, Ms_val
+
+
+def integrate_HdM(H_vir, M_vir, Ms_val):
+    """Integrate area = ∫ H dM from M=0 to M=Ms_val using trapezoidal rule.
+
+    Assumes H_vir, M_vir are arrays with finite values.
+    """
+    order = np.argsort(M_vir)
+    M_sorted = M_vir[order]
+    H_sorted = H_vir[order]
+    mask = (M_sorted >= 0.0) & (M_sorted <= Ms_val)
+    if mask.sum() < 2:
+        raise ValueError("Not enough points in 0..Ms for integration")
+    M_int = M_sorted[mask]
+    H_int = H_sorted[mask]
+    # Ensure integration uses field magnitude from 0 to positive saturation
+    # i.e. ignore negative H contributions and integrate H >= 0 only.
+    H_int_pos = np.maximum(H_int, 0.0)
+    return float(np.trapz(H_int_pos, M_int))
+
+
 
 class SetAxesDialog(QtWidgets.QDialog):
     """
@@ -744,6 +1141,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.copyLoopAct.triggered.connect(self._copy_current_loop_to_clipboard)
         export_menu.addAction(self.copyLoopAct)
 
+        # --- Calculate menu (anisotropy area method) ---
+        calc_menu = self.menuBar().addMenu("&Calculate")
+        self.calcAnisoAct = QtGui.QAction("Anisotropy energy (area method)", self)
+        self.calcAnisoAct.setStatusTip("Estimate anisotropy energy by integrating H dM from 0→Ms")
+        self.calcAnisoAct.setShortcut("Ctrl+K")
+        self.calcAnisoAct.triggered.connect(self._calculate_anisotropy_area)
+        calc_menu.addAction(self.calcAnisoAct)
+
         # Data
         self.original_df = None    # raw data from file
         self.df = None             # current, modified data
@@ -921,6 +1326,219 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage(f"Plotted {y_name} vs {x_name} ({len(x)} points)")
         self._update_parameters()
 
+    def _calculate_anisotropy_area(self):
+        """Compute anisotropy area by constructing a virgin curve (bisected
+        from increasing/decreasing branches) and integrating H dM from 0→Ms.
+        Results are shown in a persistent CalculationWindow with two subplots.
+        """
+        loop_df = self._get_current_loop_dataframe()
+        if loop_df is None:
+            QtWidgets.QMessageBox.warning(self, "No loop", "Select valid numeric X/Y columns to calculate anisotropy")
+            return
+
+        # Extract H (x) and M (y)
+        x_name, y_name = loop_df.columns[0], loop_df.columns[1]
+        H = np.asarray(loop_df[x_name].to_numpy(), dtype=float)
+        M = np.asarray(loop_df[y_name].to_numpy(), dtype=float)
+
+        finite = np.isfinite(H) & np.isfinite(M)
+        H = H[finite]
+        M = M[finite]
+
+        if H.size < 3:
+            QtWidgets.QMessageBox.warning(self, "Too few points", "Need at least 3 finite points to compute virgin curve")
+            return
+
+        # Identify increasing / decreasing branches using local difference of H
+        dh = np.diff(H)
+        # extend last sign for array length alignment
+        last_sign = dh[-1] if dh.size else 0.0
+        incr_mask = np.concatenate(([dh[0] >= 0], dh >= 0)) if dh.size else np.ones_like(H, dtype=bool)
+        decr_mask = ~incr_mask
+
+        H_incr = H[incr_mask]
+        M_incr = M[incr_mask]
+        H_decr = H[decr_mask]
+        M_decr = M[decr_mask]
+
+        # Need at least two points in each branch to interpolate
+        if H_incr.size < 2 or H_decr.size < 2:
+            # Fallback: try sorting by H and splitting into two halves
+            order = np.argsort(H)
+            Hs = H[order]
+            Ms = M[order]
+            mid = len(Hs) // 2
+            H_incr, M_incr = Hs[:mid], Ms[:mid]
+            H_decr, M_decr = Hs[mid:], Ms[mid:]
+
+        # Sort branch arrays by H for interpolation
+        si = np.argsort(H_incr)
+        sd = np.argsort(H_decr)
+        H_incr_s, M_incr_s = H_incr[si], M_incr[si]
+        H_decr_s, M_decr_s = H_decr[sd], M_decr[sd]
+
+        # Build H grid covering common H range
+        H_min = max(np.nanmin(H_incr_s), np.nanmin(H_decr_s))
+        H_max = min(np.nanmax(H_incr_s), np.nanmax(H_decr_s))
+        if not np.isfinite(H_min) or not np.isfinite(H_max) or H_max <= H_min:
+            # widen to overall range
+            H_min, H_max = float(np.nanmin(H)), float(np.nanmax(H))
+
+        H_grid = np.linspace(H_min, H_max, 2000)
+
+        # Interpolate using numpy.interp (works on sorted x)
+        M_incr_grid = np.interp(H_grid, H_incr_s, M_incr_s, left=np.nan, right=np.nan)
+        M_decr_grid = np.interp(H_grid, H_decr_s, M_decr_s, left=np.nan, right=np.nan)
+
+        # Virgin curve: bisect (average) where both defined, otherwise take defined
+        M_vir = np.nanmean(np.vstack([M_incr_grid, M_decr_grid]), axis=0)
+        # where mean is nan because both are nan, try to fill from one side
+        mask_incr_valid = ~np.isnan(M_incr_grid)
+        mask_decr_valid = ~np.isnan(M_decr_grid)
+        M_vir[mask_incr_valid & ~mask_decr_valid] = M_incr_grid[mask_incr_valid & ~mask_decr_valid]
+        M_vir[~mask_incr_valid & mask_decr_valid] = M_decr_grid[~mask_incr_valid & mask_decr_valid]
+
+        valid = np.isfinite(M_vir) & np.isfinite(H_grid)
+        if valid.sum() < 2:
+            QtWidgets.QMessageBox.warning(self, "Invalid virgin curve", "Could not build a valid virgin curve for this loop")
+            return
+
+        H_vir = H_grid[valid]
+        M_vir = M_vir[valid]
+
+        # Prefer Ms from the last BG fit for current axes if available
+        last_bg = self._get_last_bg_info_for_current_axes()
+        try:
+            if last_bg is not None and last_bg.get('b_pos') is not None and last_bg.get('b_neg') is not None:
+                Ms_bg = 0.5 * (last_bg.get('b_pos') - last_bg.get('b_neg'))
+                if np.isfinite(Ms_bg) and Ms_bg > 0:
+                    Ms_val = float(Ms_bg)
+                else:
+                    Ms_val = float(np.nanmax(M_vir))
+            else:
+                Ms_val = float(np.nanmax(M_vir))
+        except Exception:
+            Ms_val = float(np.nanmax(M_vir))
+
+        if not np.isfinite(Ms_val) or Ms_val == 0.0:
+            QtWidgets.QMessageBox.warning(self, "Bad Ms", "Could not determine a positive saturation Ms")
+            return
+
+        try:
+            area = integrate_HdM(H_vir, M_vir, Ms_val)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Integration error", str(e))
+            return
+
+        # Prepare label info (use filename only to keep titles tidy)
+        if self.last_path:
+            fname = os.path.basename(self.last_path)
+            label = f"{x_name} vs {y_name} ({fname})"
+        else:
+            label = f"{x_name} vs {y_name}"
+
+        # --- Compose axis and area units from current axis semantics ---
+        # Use self.x_quantity_type, self.x_unit_system, self.y_quantity_type, self.y_unit_system
+        def _axis_label(qtype, qsys, fallback):
+            if qtype == 'H':
+                if qsys == 'SI':
+                    return 'H (A/m)'
+                elif qsys == 'cgs-emu/Gaussian':
+                    return 'H (Oe)'
+                elif qsys == 'Heaviside-Lorentz':
+                    return 'H (HL units)'
+                else:
+                    return 'H'
+            elif qtype == 'B':
+                if qsys == 'SI':
+                    return 'B (T)'
+                elif qsys == 'cgs-emu/Gaussian':
+                    return 'B (G)'
+                elif qsys == 'Heaviside-Lorentz':
+                    return 'B (HL units)'
+                else:
+                    return 'B'
+            elif qtype == 'M':
+                if qsys == 'SI':
+                    return 'M (A/m)'
+                elif qsys == 'cgs-emu/Gaussian':
+                    return 'M (emu/cm³)'
+                elif qsys == 'Heaviside-Lorentz':
+                    return 'M (HL units)'
+                else:
+                    return 'M'
+            elif qtype == 'm':
+                if qsys == 'SI':
+                    return 'm (A·m²)'
+                elif qsys == 'cgs-emu/Gaussian':
+                    return 'm (emu)'
+                elif qsys == 'Heaviside-Lorentz':
+                    return 'm (HL units)'
+                else:
+                    return 'm'
+            else:
+                return fallback
+
+        x_label = _axis_label(self.x_quantity_type, self.x_unit_system, x_name)
+        y_label = _axis_label(self.y_quantity_type, self.y_unit_system, y_name)
+
+        # Compose area units: e.g. H·M, B·m, etc, with units
+        def _area_units(xq, xsys, yq, ysys):
+            # If either axis unit system is None/unspecified, use 'arb. units'
+            if not xsys or not ysys:
+                return 'arb. units'
+            # Only handle common cases; fallback to generic
+            if xq == 'H' and yq == 'M':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'A²/m²'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'Oe·emu/cm³'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units'
+                else:
+                    return 'H·M'
+            elif xq == 'B' and yq == 'm':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'T·A·m²'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'G·emu'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units'
+                else:
+                    return 'B·m'
+            elif xq == 'H' and yq == 'm':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'A/m·A·m²'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'Oe·emu'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units'
+                else:
+                    return 'H·m'
+            elif xq == 'B' and yq == 'M':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'T·A/m'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'G·emu/cm³'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units'
+                else:
+                    return 'B·M'
+            else:
+                return f'{xq}·{yq}'
+
+        area_units = _area_units(self.x_quantity_type, self.x_unit_system, self.y_quantity_type, self.y_unit_system)
+
+        # Create or reuse calculation window
+        if not hasattr(self, 'calc_window') or self.calc_window is None:
+            self.calc_window = CalculationWindow(None)
+
+        idx = 0 if self.calc_window.areas[0] is None else 1
+        self.calc_window.plot_result(idx, H, M, H_vir, M_vir, area, label, x_label=x_label, y_label=y_label, area_units=area_units)
+        self.calc_window.show()
+        self.calc_window.raise_()
+        self.status.showMessage(f"Calculated anisotropy area = {area:.6g} (plotted in slot {idx+1})")
+
     def _on_markers_toggled(self, checked):
         # If in background preview mode, redraw the preview;
         # otherwise, just replot the committed data.
@@ -953,6 +1571,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.xCombo.blockSignals(False)
         self.yCombo.blockSignals(False)
         self._replot()
+        # If a calculation window exists, update stored results to reflect
+        # that the axes have been swapped (H <-> M) so area sign is inverted.
+        try:
+            if hasattr(self, 'calc_window') and self.calc_window is not None:
+                self.calc_window.apply_axis_swap()
+        except Exception:
+            pass
 
     def _read_table_auto(self, path):
         import io, re, csv
