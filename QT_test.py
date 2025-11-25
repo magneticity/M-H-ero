@@ -83,7 +83,7 @@ class CalculationWindow(QtWidgets.QWidget):
         btn_bar.addWidget(self.clear2_btn)
         btn_bar.addWidget(self.swap_btn)
         # Smoothing controls: enable smoothing, window size, isotonic regression
-        self.smooth_chk = QtWidgets.QCheckBox("Smooth virgin")
+        self.smooth_chk = QtWidgets.QCheckBox("Smooth virgin curve")
         self.smooth_chk.setChecked(True)
         self.smooth_win_spin = QtWidgets.QSpinBox()
         self.smooth_win_spin.setRange(3, 201)
@@ -93,7 +93,7 @@ class CalculationWindow(QtWidgets.QWidget):
         self.iso_chk = QtWidgets.QCheckBox("Isotonic")
         self.iso_chk.setChecked(True)
         btn_bar.addWidget(self.smooth_chk)
-        btn_bar.addWidget(QtWidgets.QLabel("Win:"))
+        btn_bar.addWidget(QtWidgets.QLabel("Window:"))
         btn_bar.addWidget(self.smooth_win_spin)
         btn_bar.addWidget(self.iso_chk)
         btn_bar.addStretch(1)
@@ -244,8 +244,30 @@ class CalculationWindow(QtWidgets.QWidget):
         if mask.any():
             ax.fill_betweenx(M_sorted[mask], 0.0, H_sorted[mask], color='C1', alpha=0.2)
 
-        ax.set_xlabel('H')
-        ax.set_ylabel('M')
+        # Axis labels: prefer explicit labels stored with the result, else use quantity+system if available
+        x_label_pref = None
+        y_label_pref = None
+        try:
+            x_label_pref = data.get('x_label')
+            y_label_pref = data.get('y_label')
+        except Exception:
+            x_label_pref = None
+            y_label_pref = None
+
+        def _compose_label(pref_label, q, sys, default):
+            if pref_label:
+                return pref_label
+            if q and sys:
+                return f"{q} ({sys})"
+            if q:
+                return q
+            return default
+
+        xlabel = _compose_label(x_label_pref, data.get('xq'), data.get('xsys'), 'H')
+        ylabel = _compose_label(y_label_pref, data.get('yq'), data.get('ysys'), 'M')
+
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best')
 
@@ -263,7 +285,14 @@ class CalculationWindow(QtWidgets.QWidget):
         except Exception:
             applied_area = area
 
-        ax.annotate(f'Area = {applied_area:.6g} (units: H·M)', xy=(0.05, 0.95), xycoords='axes fraction',
+        # Area units: prefer stored area_units, else show generic H·M
+        area_units_pref = None
+        try:
+            area_units_pref = data.get('area_units')
+        except Exception:
+            area_units_pref = None
+        area_units_str = f" ({area_units_pref})" if area_units_pref else " (units: H·M)"
+        ax.annotate(f'Area = {applied_area:.6g}{area_units_str}', xy=(0.05, 0.95), xycoords='axes fraction',
                     fontsize=9, verticalalignment='top')
 
         # update stored displayed area (without overwriting original raw value)
@@ -428,55 +457,41 @@ class CalculationWindow(QtWidgets.QWidget):
         except Exception:
             self.raw_results[index] = None
 
+        # Clear target axis; store raw result and delegate actual drawing to _redraw_slots
         ax_target.clear()
 
+        # store metadata/arrays (raw, unmodified)
         try:
-            M_vir_plot = np.maximum(M_vir, 0.0)
+            self.raw_results[index] = {
+                'H': np.asarray(H),
+                'M': np.asarray(M),
+                'H_vir': np.asarray(H_vir),
+                'M_vir': np.asarray(M_vir),
+                'area': float(area),
+                'label': label,
+                'x_label': x_label,
+                'y_label': y_label,
+                'area_units': area_units,
+                'xq': xq,
+                'xsys': xsys,
+                'yq': yq,
+                'ysys': ysys,
+            }
         except Exception:
-            M_vir_plot = M_vir
+            self.raw_results[index] = None
 
-        order = np.argsort(M_vir_plot)
-        M_sorted = M_vir_plot[order]
-        H_sorted = H_vir[order]
+        # Keep label for UI state
+        self.labels[index] = label
 
-        try:
-            ax_target.plot(H, M, linewidth=0.8, color='0.6', alpha=0.5, label='raw loop')
-        except Exception:
-            pass
-
-        H_sorted_pos = np.maximum(H_sorted, 0.0)
-        ax_target.plot(H_sorted_pos, M_sorted, linewidth=1.5, color='C1')
-
-        Ms = float(np.nanmax(M_vir_plot) if M_vir_plot.size else 0.0)
-        mask = (M_sorted >= 0) & (M_sorted <= Ms)
-        if mask.any():
-            ax_target.fill_betweenx(M_sorted[mask], 0.0, H_sorted_pos[mask], color='C1', alpha=0.2)
-
-        # Use provided axis labels if given, else fallback
-        ax_target.set_xlabel(x_label if x_label else 'H')
-        ax_target.set_ylabel(y_label if y_label else 'M')
-        ax_target.grid(True, alpha=0.3)
-
+        # If plotting into left slot, clear the right slot (previous behaviour)
         if index == 0:
             self.ax2.clear()
             self.areas[1] = None
             self.labels[1] = None
             self.raw_results[1] = None
 
-        # Annotate area with units if provided
-        area_units_str = f" ({area_units})" if area_units else ""
-        ax_target.annotate(f'Area = {area:.6g}{area_units_str}', xy=(0.05, 0.95), xycoords='axes fraction',
-                           fontsize=9, verticalalignment='top')
-
-        self.areas[index] = area
-        self.labels[index] = label
-
-        self._update_diff_label()
-        try:
-            ax_target.relim()
-            ax_target.autoscale_view()
-        except Exception:
-            pass
+        # Delegate drawing to redraw logic so smoothing/isotonic settings are respected
+        self._redraw_slots()
         self.canvas.draw_idle()
 
 
@@ -674,6 +689,56 @@ def integrate_HdM(H_vir, M_vir, Ms_val):
 
 
 
+class UnitHelpDialog(QtWidgets.QDialog):
+    """Small help dialog showing unit conversion guidance and HL explanation."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Unit Systems Help")
+        self.setMinimumWidth(500)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Title
+        title = QtWidgets.QLabel("Unit Systems & Conversions")
+        title_font = title.font()
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 1)
+        title.setFont(title_font)
+        layout.addWidget(title)
+
+        # Help text
+        help_text = QtWidgets.QTextEdit()
+        help_text.setReadOnly(True)
+        help_text.setMarkdown(
+            "## Supported Unit Systems\n\n"
+            "### SI (International System)\n"
+            "- Field **H**: A/m\n"
+            "- Magnetisation **M**: A/m\n"
+            "- Moment **m**: A·m²\n"
+            "- Flux density **B**: T (Tesla)\n\n"
+            "### cgs-emu/Gaussian\n"
+            "- Field **H**: Oe (Oersted)\n"
+            "- Magnetisation **M**: emu/cm³\n"
+            "- Moment **m**: emu\n"
+            "- Flux density **B**: G (Gauss)\n\n"
+            "### Heaviside–Lorentz (HL)\n"
+            "Rationalized Gaussian system. Same integral values as Gaussian but with scaled field/magnetisation:\n"
+            "- **H** and **B** scaled by 1/√(4π) relative to Gaussian\n"
+            "- **M** and **m** scaled by √(4π) relative to Gaussian\n"
+            "- Use HL when working with rationalized CGS data.\n\n"
+            "## Quick Conversions\n"
+            "- 1 erg/cm³ = 0.1 J/m³\n"
+            "- 1 emu = 10⁻³ A·m²\n"
+            "- 1 Oe ≈ 79.577 A/m\n"
+        )
+        layout.addWidget(help_text)
+
+        # Close button
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
+
 class SetAxesDialog(QtWidgets.QDialog):
     """
     Dialog to manually set what the X and Y axes represent and their unit systems,
@@ -714,8 +779,9 @@ class SetAxesDialog(QtWidgets.QDialog):
         self.xSystemCombo.addItem("Unspecified")
         self.xSystemCombo.addItem("SI")
         self.xSystemCombo.addItem("cgs-emu/Gaussian")
+        self.xSystemCombo.addItem("Heaviside-Lorentz")
 
-        if current_x_system in ("SI", "cgs-emu/Gaussian"):
+        if current_x_system in ("SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"):
             idx = self.xSystemCombo.findText(current_x_system)
             if idx >= 0:
                 self.xSystemCombo.setCurrentIndex(idx)
@@ -724,6 +790,12 @@ class SetAxesDialog(QtWidgets.QDialog):
 
         formX.addRow("Unit system for X:", self.xSystemCombo)
         layout.addLayout(formX)
+
+        # Help button for unit systems
+        help_btn = QtWidgets.QPushButton("? Help")
+        help_btn.setMaximumWidth(60)
+        help_btn.clicked.connect(lambda: UnitHelpDialog(self).exec())
+        formX.addRow("", help_btn)
 
         # --- Y axis group ---
         groupY = QtWidgets.QGroupBox("Y axis quantity")
@@ -752,8 +824,9 @@ class SetAxesDialog(QtWidgets.QDialog):
         self.ySystemCombo.addItem("Unspecified")
         self.ySystemCombo.addItem("SI")
         self.ySystemCombo.addItem("cgs-emu/Gaussian")
+        self.ySystemCombo.addItem("Heaviside-Lorentz")
 
-        if current_y_system in ("SI", "cgs-emu/Gaussian"):
+        if current_y_system in ("SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"):
             idx = self.ySystemCombo.findText(current_y_system)
             if idx >= 0:
                 self.ySystemCombo.setCurrentIndex(idx)
@@ -762,6 +835,26 @@ class SetAxesDialog(QtWidgets.QDialog):
 
         formY.addRow("Unit system for Y:", self.ySystemCombo)
         layout.addLayout(formY)
+
+        # Now wire up the tooltip callbacks (after both combos exist)
+        hl_tooltip_short = "Choose unit system (SI, cgs-emu/Gaussian, Heaviside-Lorentz)"
+        hl_tooltip_long = (
+            "Heaviside–Lorentz (HL) is the rationalized form of Gaussian units.\n"
+            "Conversions use SI ↔ Gaussian factors then apply HL rationalization: "
+            "H,B scaled by 1/√(4π); M,m scaled by √(4π)."
+        )
+
+        def _update_set_axes_tooltips(_=None):
+            if self.xSystemCombo.currentText() == "Heaviside-Lorentz" or self.ySystemCombo.currentText() == "Heaviside-Lorentz":
+                self.xSystemCombo.setToolTip(hl_tooltip_long)
+                self.ySystemCombo.setToolTip(hl_tooltip_long)
+            else:
+                self.xSystemCombo.setToolTip(hl_tooltip_short)
+                self.ySystemCombo.setToolTip(hl_tooltip_short)
+
+        self.xSystemCombo.currentTextChanged.connect(_update_set_axes_tooltips)
+        self.ySystemCombo.currentTextChanged.connect(_update_set_axes_tooltips)
+        _update_set_axes_tooltips()
 
         # Info
         info = QtWidgets.QLabel(
@@ -802,6 +895,8 @@ class SetAxesDialog(QtWidgets.QDialog):
             x_system = "SI"
         elif xs == "cgs-emu/Gaussian":
             x_system = "cgs-emu/Gaussian"
+        elif xs == "Heaviside-Lorentz":
+            x_system = "Heaviside-Lorentz"
         else:
             x_system = None
 
@@ -819,6 +914,8 @@ class SetAxesDialog(QtWidgets.QDialog):
             y_system = "SI"
         elif ys == "cgs-emu/Gaussian":
             y_system = "cgs-emu/Gaussian"
+        elif ys == "Heaviside-Lorentz":
+            y_system = "Heaviside-Lorentz"
         else:
             y_system = None
 
