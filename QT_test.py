@@ -3,6 +3,7 @@ import io
 import os
 import pandas as pd
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 
 from PySide6 import QtWidgets, QtGui, QtCore
@@ -395,10 +396,20 @@ class CalculationWindow(QtWidgets.QWidget):
                 # energy density K_eff (erg/cm^3)
                 K = diff
                 out_lines.append(f"K_eff = {K:.6g} erg/cm³")
+                # Anisotropy field: H_K = 2*K_eff / Ms (cgs)
+                Ms0 = meta0.get('Ms')
+                if Ms0 is not None and Ms0 > 0:
+                    H_K = 2.0 * K / Ms0
+                    out_lines.append(f"H_K = {H_K:.6g} Oe")
             elif yq0 == 'm':
                 # energy E_a (erg)
                 E = diff
                 out_lines.append(f"E_a = {E:.6g} erg")
+                # Anisotropy field: H_K = 2*E_a / ms (cgs)
+                ms0 = meta0.get('Ms')
+                if ms0 is not None and ms0 > 0:
+                    H_K = 2.0 * E / ms0
+                    out_lines.append(f"H_K = {H_K:.6g} Oe")
             else:
                 out_lines.append("(units: cgs, unknown quantity pairing)")
         elif xsys0 == 'SI':
@@ -406,8 +417,18 @@ class CalculationWindow(QtWidgets.QWidget):
             energy = mu0 * diff
             if xq0 == 'H' and yq0 == 'M':
                 out_lines.append(f"K_eff = {energy:.6g} J/m³")
+                # Anisotropy field: H_K = 2*K_eff / (mu0*Ms) (SI)
+                Ms0 = meta0.get('Ms')
+                if Ms0 is not None and Ms0 > 0:
+                    H_K = 2.0 * energy / (mu0 * Ms0)
+                    out_lines.append(f"H_K = {H_K:.6g} A/m")
             elif yq0 == 'm':
                 out_lines.append(f"E_a = {energy:.6g} J")
+                # Anisotropy field: H_K = 2*E_a / (mu0*ms) (SI)
+                ms0 = meta0.get('Ms')
+                if ms0 is not None and ms0 > 0:
+                    H_K = 2.0 * energy / (mu0 * ms0)
+                    out_lines.append(f"H_K = {H_K:.6g} A/m")
             else:
                 out_lines.append("(units: SI, unknown quantity pairing)")
         elif xsys0 == 'Heaviside-Lorentz':
@@ -420,10 +441,20 @@ class CalculationWindow(QtWidgets.QWidget):
                 K_cgs = diff
                 K_si = 0.1 * diff  # 1 erg/cm^3 = 0.1 J/m^3
                 out_lines.append(f"K_eff = {K_cgs:.6g} erg/cm³ ≈ {K_si:.6g} J/m³ (Heaviside–Lorentz)")
+                # Anisotropy field in HL units (same formula as Gaussian)
+                Ms0 = meta0.get('Ms')
+                if Ms0 is not None and Ms0 > 0:
+                    H_K_hl = 2.0 * K_cgs / Ms0
+                    out_lines.append(f"H_K = {H_K_hl:.6g} HL units")
             elif yq0 == 'm':
                 E_cgs = diff
                 E_si = 0.1 * diff
                 out_lines.append(f"E_a = {E_cgs:.6g} erg ≈ {E_si:.6g} J (Heaviside–Lorentz)")
+                # Anisotropy field in HL units
+                ms0 = meta0.get('Ms')
+                if ms0 is not None and ms0 > 0:
+                    H_K_hl = 2.0 * E_cgs / ms0
+                    out_lines.append(f"H_K = {H_K_hl:.6g} HL units")
             else:
                 out_lines.append("(units: HL, unknown quantity pairing)")
         else:
@@ -433,29 +464,15 @@ class CalculationWindow(QtWidgets.QWidget):
 
     def plot_result(self, index, H, M, H_vir, M_vir, area, label,
                     x_label=None, y_label=None, area_units=None,
-                    xq=None, xsys=None, yq=None, ysys=None):
-        """Plot results into subplot `index` (0 or 1), with optional axis and area units labels."""
+                    xq=None, xsys=None, yq=None, ysys=None, Ms=None):
+        """Plot results into subplot `index` (0 or 1), with optional axis and area units labels.
+        
+        Ms: saturation magnetization/moment value for anisotropy field calculation.
+        """
         if index not in (0, 1):
             index = 0
 
         ax_target = self.ax1 if index == 0 else self.ax2
-
-        try:
-            # Store axis/units metadata if passed in kwargs (fall back to None)
-            self.raw_results[index] = {
-                'H': np.asarray(H),
-                'M': np.asarray(M),
-                'H_vir': np.asarray(H_vir),
-                'M_vir': np.asarray(M_vir),
-                'area': float(area),
-                'label': label,
-                'xq': xq,
-                'xsys': xsys,
-                'yq': yq,
-                'ysys': ysys,
-            }
-        except Exception:
-            self.raw_results[index] = None
 
         # Clear target axis; store raw result and delegate actual drawing to _redraw_slots
         ax_target.clear()
@@ -476,6 +493,7 @@ class CalculationWindow(QtWidgets.QWidget):
                 'xsys': xsys,
                 'yq': yq,
                 'ysys': ysys,
+                'Ms': float(Ms) if Ms is not None else None,
             }
         except Exception:
             self.raw_results[index] = None
@@ -1423,6 +1441,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.openAct.triggered.connect(self.open_file)
         file_menu.addAction(self.openAct)
 
+        self.openMultiAct = QtGui.QAction("Open &Multiple…", self)
+        self.openMultiAct.setStatusTip("Open multiple data files and overlay them")
+        self.openMultiAct.triggered.connect(self.open_multiple_files)
+        file_menu.addAction(self.openMultiAct)
+
         self.quitAct = QtGui.QAction("&Quit", self)
         self.quitAct.setShortcut("Ctrl+Q")
         self.quitAct.triggered.connect(self.close)
@@ -1445,7 +1468,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.centerYAct.setStatusTip("Subtract mean of current Y column so it is centered at zero")
         self.centerYAct.triggered.connect(self.center_y_about_zero)
         process_menu.addAction(self.centerYAct)
-    
+
+        # --- Centre about X=0 ---
+        self.centerXAct = QtGui.QAction("Center about &X = 0", self)
+        self.centerXAct.setShortcut("Ctrl+Shift+X")
+        self.centerXAct.setStatusTip("Subtract mean of current X column so it is centered at zero")
+        self.centerXAct.triggered.connect(self.center_x_about_zero)
+        process_menu.addAction(self.centerXAct)
+
         self.bgAct = QtGui.QAction("Linear background subtraction (fitting)", self)
         self.bgAct.setShortcut("Ctrl+B")
         self.bgAct.setStatusTip("Fit a straight line to the high-field region and subtract it")
@@ -1513,12 +1543,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.calcAnisoAct.triggered.connect(self._calculate_anisotropy_area)
         calc_menu.addAction(self.calcAnisoAct)
 
-        # Data
+        # Data: single dataset mode (backward compatible)
         self.original_df = None    # raw data from file
         self.df = None             # current, modified data
         self.numeric_cols = []
         self.last_path = None
         self.history = []          # list of dicts describing operations
+        
+        # Multi-dataset mode: list of dicts {path, original_df, df, history}
+        self.dataset_list = []     # list of active datasets
+        self.multi_mode = False    # True when multiple datasets loaded
+        
         self._wiring_done = False
 
         # Wire UI interactions
@@ -1537,7 +1572,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path:
             return
         
-        # Always clear current state on new file
+        # Any file-open should start fresh: clear multi-dataset state
+        self.dataset_list = []
+        self.multi_mode = False
+
+        # Always clear current single-dataset state on new file
         self.df = None
         self.original_df = None
         self.history = []
@@ -1567,10 +1606,112 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Initial plot: Y vs X using first two numeric columns
             self._replot()
+            self._update_menu_states()
             self.status.showMessage(f"Loaded: {path}")
         except Exception as e:
+            self._update_menu_states()
             QtWidgets.QMessageBox.critical(self, "Load error", str(e))
             self.status.showMessage("Error")
+
+    def open_multiple_files(self):
+        """Open and overlay multiple data files."""
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Open multiple data files",
+            self.last_path or "",
+            "Data files (*.csv *.txt *.dat *.tsv *.vhd);;All files (*)",
+        )
+        if not paths:
+            return
+
+        # Any file-open should start fresh: clear single-dataset state
+        self.df = None
+        self.original_df = None
+
+        # Clear current state and initialize multi-dataset mode
+        self.dataset_list = []
+        self.multi_mode = True
+        self.history = []
+        self._reset_axes_semantics(replot=False)
+
+        try:
+            # Load all files
+            for path in paths:
+                self.status.showMessage(f"Loading: {path}")
+                df = self._read_table_auto(path)
+                self.dataset_list.append({
+                    'path': path,
+                    'original_df': df.copy(deep=True),
+                    'df': df.copy(deep=True),
+                    'history': []
+                })
+
+            if self.dataset_list:
+                self.last_path = paths[0]
+
+                # Determine numeric columns (use first dataset as reference)
+                self.numeric_cols = [c for c in self.dataset_list[0]['df'].columns 
+                                    if np.issubdtype(self.dataset_list[0]['df'][c].dtype, np.number)]
+
+                if len(self.numeric_cols) < 2:
+                    raise ValueError("Need at least two numeric columns to plot.")
+
+                # Populate combos
+                self._populate_combos()
+
+                # Initial plot: overlay all datasets
+                self._replot()
+                self._update_menu_states()
+                self.status.showMessage(f"Loaded {len(self.dataset_list)} files")
+        except Exception as e:
+            self.multi_mode = False
+            self.dataset_list = []
+            self._update_menu_states()
+            QtWidgets.QMessageBox.critical(self, "Load error", str(e))
+            self.status.showMessage("Error")
+
+    # Helper (non-GUI) to load multiple files programmatically (used in tests)
+    def _open_files(self, paths):
+        """Programmatically load multiple files into multi-dataset mode (no dialogs)."""
+        if not paths:
+            return
+        # Reset state
+        self.df = None
+        self.original_df = None
+        self.dataset_list = []
+        self.multi_mode = True
+        self.history = []
+        self._reset_axes_semantics(replot=False)
+        try:
+            for path in paths:
+                df = self._read_table_auto(path)
+                self.dataset_list.append({
+                    'path': path,
+                    'original_df': df.copy(deep=True),
+                    'df': df.copy(deep=True),
+                    'history': []
+                })
+            if self.dataset_list:
+                self.last_path = paths[0]
+                import numpy as np
+                self.numeric_cols = [c for c in self.dataset_list[0]['df'].columns
+                                     if np.issubdtype(self.dataset_list[0]['df'][c].dtype, np.number)]
+                if len(self.numeric_cols) < 2:
+                    raise ValueError("Need at least two numeric columns to plot.")
+                self._populate_combos()
+                self._replot()
+                self._update_menu_states()
+        except Exception as e:
+            self.multi_mode = False
+            self.dataset_list = []
+            self._update_menu_states()
+            raise
+
+    def _update_menu_states(self):
+        """Enable/disable menu actions based on current mode (single vs multi-dataset)."""
+        # Disable anisotropy calculation in multi-dataset mode
+        if hasattr(self, 'calcAnisoAct'):
+            self.calcAnisoAct.setEnabled(not (self.multi_mode and self.dataset_list))
 
     def _populate_combos(self):
         self.xCombo.blockSignals(True)
@@ -1650,6 +1791,64 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------- Plotting ----------
     def _replot(self):
+        # Multi-dataset mode
+        if self.multi_mode and self.dataset_list:
+            x_name = self.xCombo.currentText()
+            y_name = self.yCombo.currentText()
+            if not x_name or not y_name or x_name == y_name:
+                if x_name == y_name:
+                    self.status.showMessage("X and Y are the same column; nothing to plot.")
+                self.canvas.ax.clear()
+                self.canvas.fig.canvas.draw_idle()
+                return
+
+            self.canvas.ax.clear()
+            total_points = 0
+            
+            # Use a sequential colormap to show progression from first to last dataset
+            # 'viridis' is perceptually uniform and colorblind-friendly
+            # Other good options: 'plasma', 'cividis', 'twilight', 'turbo'
+            n_datasets = len(self.dataset_list)
+            if n_datasets <= 1:
+                colors = ['C0']  # Default blue for single dataset
+            else:
+                # Sample colormap evenly, avoiding extremes for better visibility
+                cmap = plt.cm.viridis
+                color_positions = np.linspace(0.1, 0.9, n_datasets)
+                colors = [cmap(pos) for pos in color_positions]
+            
+            for idx, dataset in enumerate(self.dataset_list):
+                df = dataset['df']
+                if x_name not in df.columns or y_name not in df.columns:
+                    continue
+                
+                x = df[x_name].to_numpy()
+                y = df[y_name].to_numpy()
+                
+                mask = np.isfinite(x) & np.isfinite(y)
+                x = x[mask]
+                y = y[mask]
+                
+                if len(x) > 0:
+                    label = os.path.basename(dataset['path'])
+                    self.canvas.ax.plot(x, y, linewidth=1.5, label=label, color=colors[idx])
+                    total_points += len(x)
+            
+            self._set_axis_labels(self.canvas.ax, x_name, y_name)
+            self.canvas.ax.set_title(self.windowTitle())
+            self.canvas.ax.grid(True, alpha=0.3)
+            self.canvas.ax.legend(loc='best', fontsize=8)
+            
+            if self.autoRescaleChk.isChecked():
+                self.canvas.ax.relim()
+                self.canvas.ax.autoscale()
+            
+            self.canvas.fig.canvas.draw_idle()
+            self.status.showMessage(f"Plotted {len(self.dataset_list)} files ({total_points} total points)")
+            self._update_parameters()
+            return
+
+        # Single-dataset mode (backward compatible)
         if self.df is None or not self.numeric_cols:
             return
         x_name = self.xCombo.currentText()
@@ -1666,7 +1865,6 @@ class MainWindow(QtWidgets.QMainWindow):
         y = self.df[y_name].to_numpy()
 
         # Drop NaNs together to keep paired data aligned
-        import numpy as np
         mask = np.isfinite(x) & np.isfinite(y)
         x = x[mask]
         y = y[mask]
@@ -1695,6 +1893,16 @@ class MainWindow(QtWidgets.QMainWindow):
         from increasing/decreasing branches) and integrating H dM from 0→Ms.
         Results are shown in a persistent CalculationWindow with two subplots.
         """
+        # Disable in multi-dataset mode
+        if self.multi_mode and self.dataset_list:
+            QtWidgets.QMessageBox.information(
+                self, 
+                "Not available in multi-dataset mode",
+                "Anisotropy calculation is only available for single datasets. "
+                "Please open a single file to use this feature."
+            )
+            return
+        
         loop_df = self._get_current_loop_dataframe()
         if loop_df is None:
             QtWidgets.QMessageBox.warning(self, "No loop", "Select valid numeric X/Y columns to calculate anisotropy")
@@ -1903,6 +2111,7 @@ class MainWindow(QtWidgets.QMainWindow):
             x_label=x_label, y_label=y_label, area_units=area_units,
             xq=self.x_quantity_type, xsys=self.x_unit_system,
             yq=self.y_quantity_type, ysys=self.y_unit_system,
+            Ms=Ms_val,
         )
         self.calc_window.show()
         self.calc_window.raise_()
@@ -1973,12 +2182,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return sum(is_number(t) for t in toks) / len(toks)
 
         # Honor explicit markers like [Data], or "new section: section 0:" for the DMS MkII
+        DMS_marker = False  # ensure defined even if not encountered
         data_start = None
         for i, ln in enumerate(lines):
             if ln.strip().lower() == "[data]" or ln.strip().lower() == "new section: section 0:": 
                 if ln.strip().lower() == "new section: section 0:":
                     DMS_marker = True # True if DMS MkII style marker found
-                print(f"Found data start marker at line {i + 1}")
+                # Debug suppressed: data start marker detected (line {i + 1})
                 data_start = i + 1
                 break
 
@@ -1990,7 +2200,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if ls.startswith(("#", "%", "*", "//", "/*", "@")):
                     continue
                 if numeric_fraction(ls) >= 0.8: # If no explicit marker found, use first line with high numeric content
-                    print(f"Found data start candidate at line {i}")
+                    # Debug suppressed: heuristic data start candidate line {i}
                     data_start = i
                     break
 
@@ -2102,6 +2312,29 @@ class MainWindow(QtWidgets.QMainWindow):
             if record:
                 self._add_history_entry(
                     op="center_y",
+                    params={"column": col_name, "offset": offset},
+                )
+
+        elif op == "center_x":
+            col_name = params.get("column")
+            if col_name not in self.df.columns:
+                return
+
+            col = self.df[col_name]
+            if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                return
+
+            # Use given offset if present, otherwise recompute
+            if "offset" in params:
+                offset = float(params["offset"])
+            else:
+                offset = float(col.mean(skipna=True))
+
+            self.df[col_name] = col - offset
+
+            if record:
+                self._add_history_entry(
+                    op="center_x",
                     params={"column": col_name, "offset": offset},
                 )
 
@@ -2389,12 +2622,257 @@ class MainWindow(QtWidgets.QMainWindow):
                     },
                 )
 
+        elif op == "bg_linear_branches_multi":
+            # Multi-dataset BG correction: apply to each dataset in dataset_list
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            xcol = params.get("x_column")
+            ycol = params.get("column")
+            m_bg_list = params.get("m_bg_list")  # List of m_bg values per dataset
+            
+            # If m_bg_list is provided, use it; otherwise compute per dataset
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or xcol not in df.columns or ycol not in df.columns:
+                    continue
+                
+                x = np.asarray(df[xcol].to_numpy(), dtype=float)
+                y = np.asarray(df[ycol].to_numpy(), dtype=float)
+                
+                # Use stored m_bg if available
+                if m_bg_list and i < len(m_bg_list):
+                    m_bg = float(m_bg_list[i])
+                else:
+                    # Recompute from threshold (fallback)
+                    thr = float(params.get("threshold", 0))
+                    info = self._compute_bg_corrected(df, xcol, ycol, thr)
+                    m_bg = info.get('m_bg', 0.0)
+                
+                finite = np.isfinite(x) & np.isfinite(y)
+                y_corr = y.copy()
+                y_corr[finite] = y[finite] - m_bg * x[finite]
+                
+                ds['df'][ycol] = y_corr
+                
+            # No self.history recording here since this is during replay
+            
+        elif op == "drift_linear_tails_multi":
+            # Multi-dataset drift correction: apply to each dataset in dataset_list
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            xcol = params.get("x_column")
+            ycol = params.get("column")
+            slope_list = params.get("slope_list")  # List of slopes per dataset
+            
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or ycol not in df.columns:
+                    continue
+                
+                y = np.asarray(df[ycol].to_numpy(), dtype=float)
+                n = len(y)
+                if n < 2:
+                    continue
+                
+                idx = np.arange(n, dtype=float)
+                
+                # Use stored slope if available
+                if slope_list and i < len(slope_list):
+                    slope = float(slope_list[i])
+                else:
+                    # Recompute from threshold (fallback)
+                    thr = float(params.get("threshold", 0))
+                    info = self._compute_drift_tails(df, xcol, ycol, thr)
+                    slope = info.get('slope', 0.0)
+                
+                finite_y = np.isfinite(y)
+                if finite_y.sum() < 2:
+                    continue
+                
+                idx_ref = idx[finite_y]
+                idx_center = idx_ref.mean()
+                y_corr = y - slope * (idx - idx_center)
+                
+                ds['df'][ycol] = y_corr
+            
+            # No self.history recording here since this is during replay
+
+        elif op == "center_y_multi":
+            # Multi-dataset Y-offset: apply to each dataset in dataset_list
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            ycol = params.get("column")
+            offset_list = params.get("offset_list")  # List of offsets per dataset
+            
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or ycol not in df.columns:
+                    continue
+                
+                col = df[ycol]
+                if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                    continue
+                
+                # Use stored offset if available
+                if offset_list and i < len(offset_list):
+                    offset = float(offset_list[i])
+                else:
+                    # Recompute (fallback)
+                    offset = float(col.mean(skipna=True))
+                
+                ds['df'][ycol] = col - offset
+            
+            # No self.history recording here since this is during replay
+
+        elif op == "center_x_multi":
+            # Multi-dataset X-offset: apply to each dataset in dataset_list
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            xcol = params.get("column")
+            offset_list = params.get("offset_list")  # List of offsets per dataset
+            
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or xcol not in df.columns:
+                    continue
+                
+                col = df[xcol]
+                if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                    continue
+                
+                # Use stored offset if available
+                if offset_list and i < len(offset_list):
+                    offset = float(offset_list[i])
+                else:
+                    # Recompute (fallback)
+                    offset = float(col.mean(skipna=True))
+                
+                ds['df'][xcol] = col - offset
+            
+            # No self.history recording here since this is during replay
+
+        elif op == "volume_normalisation_multi":
+            # Multi-dataset volume normalisation: apply to each dataset
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            ycol = params.get("column")
+            scale_factor_list = params.get("scale_factor_list", [])
+            
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or ycol not in df.columns:
+                    continue
+                
+                s = df[ycol]
+                if not np.issubdtype(s.dtype, np.number):
+                    continue
+                
+                # Use stored scale_factor if available
+                if scale_factor_list and i < len(scale_factor_list):
+                    scale_factor = float(scale_factor_list[i])
+                else:
+                    # Recompute (fallback) - this is complex, so use 1.0 as safe default
+                    scale_factor = 1.0
+                
+                arr = np.asarray(s.to_numpy(), float)
+                ds['df'][ycol] = arr * scale_factor
+            
+            # No self.history recording here since this is during replay
+
+        elif op == "unit_convert_multi":
+            # Multi-dataset unit conversion: apply to each dataset
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            from_sys = params.get("from_system")
+            to_sys = params.get("to_system")
+            field_col = params.get("field_column")
+            mag_col = params.get("mag_column")
+            field_q = params.get("field_quantity")
+            mag_q = params.get("mag_quantity")
+            
+            for ds in self.dataset_list:
+                df = ds.get('df')
+                if df is None:
+                    continue
+                
+                # Apply to this dataset using temporary swap
+                old_df = self.df
+                self.df = df
+                try:
+                    # Use the single-dataset version without recording
+                    single_params = {
+                        "from_system": from_sys,
+                        "to_system": to_sys,
+                        "field_column": field_col,
+                        "mag_column": mag_col,
+                        "field_quantity": field_q,
+                        "mag_quantity": mag_q,
+                    }
+                    self._apply_operation("unit_convert", single_params, record=False)
+                    ds['df'] = self.df
+                finally:
+                    self.df = old_df
+            
+            # No self.history recording here since this is during replay
+
+        elif op == "drift_linear_loopclosure_multi":
+            # Multi-dataset loop closure drift: apply to each dataset
+            if not self.multi_mode or not self.dataset_list:
+                return
+            
+            xcol = params.get("x_column")
+            ycol = params.get("column")
+            slope_list = params.get("slope_list", [])
+            end_frac = float(params.get("end_window_fraction", 0.02))
+            
+            for i, ds in enumerate(self.dataset_list):
+                df = ds.get('df')
+                if df is None or ycol not in df.columns:
+                    continue
+                
+                # Apply to this dataset using temporary swap
+                old_df = self.df
+                self.df = df
+                try:
+                    # Use stored slope if available, otherwise recompute
+                    if slope_list and i < len(slope_list):
+                        slope = float(slope_list[i])
+                        single_params = {
+                            "x_column": xcol,
+                            "column": ycol,
+                            "end_window_fraction": end_frac,
+                            "drift_slope": slope,
+                        }
+                    else:
+                        single_params = {
+                            "x_column": xcol,
+                            "column": ycol,
+                            "end_window_fraction": end_frac,
+                        }
+                    
+                    self._apply_operation("drift_linear_loopclosure", single_params, record=False)
+                    ds['df'] = self.df
+                finally:
+                    self.df = old_df
+            
+            # No self.history recording here since this is during replay
+
         # ... more operations in future
         # elif op == "drift_correct": ...
         # (add more operations here as you implement them)
 
     def _open_set_axes_dialog(self):
-        """Manually set what the X and Y axes represent and their unit systems."""
+        """Manually set what the X and Y axes represent and their unit systems.
+        
+        Note: In multi-dataset mode, axis metadata is shared across all datasets
+        (no per-dataset history entries since this only affects display/interpretation).
+        """
         dlg = SetAxesDialog(
             self,
             current_x_type=self.x_quantity_type,
@@ -2407,7 +2885,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         x_type, x_system, y_type, y_system = dlg.get_selection()
 
-        # Update stored axis meanings
+        # Update stored axis meanings (shared for all datasets)
         self.x_quantity_type = x_type
         self.x_unit_system = x_system
 
@@ -2460,13 +2938,66 @@ class MainWindow(QtWidgets.QMainWindow):
     # Shift about y=0
     def center_y_about_zero(self):
         """Shift the currently selected Y column so its mean is 0."""
-        if self.df is None:
-            QtWidgets.QMessageBox.warning(self, "No data", "Load data before applying corrections.")
-            return
-
         y_name = self.yCombo.currentText()
         if not y_name:
             QtWidgets.QMessageBox.warning(self, "No Y column", "Select a Y column first.")
+            return
+
+        # Multi-dataset mode
+        if self.multi_mode and self.dataset_list:
+            applied = 0
+            failed = []
+            offset_list = []  # Store offsets for replay
+            
+            for ds in self.dataset_list:
+                df = ds.get('df')
+                if df is None or y_name not in df.columns:
+                    failed.append((ds.get('path'), "Column not found"))
+                    offset_list.append(0.0)
+                    continue
+                
+                col = df[y_name]
+                if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                    failed.append((ds.get('path'), "Column not numeric"))
+                    offset_list.append(0.0)
+                    continue
+                
+                # Compute offset
+                offset = float(col.mean(skipna=True))
+                ds['df'][y_name] = col - offset
+                
+                # Record per-dataset history
+                entry = {
+                    "op": "center_y",
+                    "params": {"column": y_name, "offset": offset},
+                }
+                ds.setdefault('history', []).append(entry)
+                offset_list.append(offset)
+                applied += 1
+            
+            # Add global history entry
+            if applied > 0:
+                self._add_history_entry(
+                    op="center_y_multi",
+                    params={
+                        "column": y_name,
+                        "num_datasets": applied,
+                        "offset_list": offset_list,
+                        "applied_datasets": [ds.get('path') for ds in self.dataset_list],
+                    },
+                )
+            
+            msg = f"Centered {y_name} for {applied} dataset(s)"
+            if failed:
+                msg += f"; {len(failed)} failed"
+            
+            self.status.showMessage(msg)
+            self._replot()
+            return
+
+        # Single-dataset mode
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before applying corrections.")
             return
 
         # Delegate to operation dispatcher (record=True by default)
@@ -2478,6 +3009,102 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.showMessage(f"Centered {y_name} about 0 (offset {offset:.4g})")
         else:
             self.status.showMessage(f"Centered {y_name} about 0")
+
+        self._replot()
+
+    def center_x_about_zero(self):
+        """Shift the currently selected X column so its mean is 0.
+
+        Notes:
+        - Many hysteresis field columns are already symmetric about zero so the mean ~ 0.
+        - If the absolute mean shift is below a tolerance, we report that it was already centered.
+        """
+        x_name = self.xCombo.currentText()
+        if not x_name:
+            QtWidgets.QMessageBox.warning(self, "No X column", "Select an X column first.")
+            return
+
+        # Multi-dataset mode
+        if self.multi_mode and self.dataset_list:
+            applied = 0
+            failed = []
+            offset_list = []  # Store offsets for replay
+
+            for ds in self.dataset_list:
+                df = ds.get('df')
+                if df is None or x_name not in df.columns:
+                    failed.append((ds.get('path'), "Column not found"))
+                    offset_list.append(0.0)
+                    continue
+
+                col = df[x_name]
+                if not hasattr(col, "dtype") or not np.issubdtype(col.dtype, np.number):
+                    failed.append((ds.get('path'), "Column not numeric"))
+                    offset_list.append(0.0)
+                    continue
+
+                # Compute offset and decide if adjustment needed
+                offset = float(col.mean(skipna=True))
+                tol = 1e-12 * max(1.0, abs(col.max() - col.min()))
+                if abs(offset) < tol:
+                    # Already centered (record zero offset for clarity)
+                    ds['df'][x_name] = col  # unchanged
+                    offset = 0.0
+                else:
+                    ds['df'][x_name] = col - offset
+
+                entry = {
+                    "op": "center_x",
+                    "params": {"column": x_name, "offset": offset},
+                }
+                ds.setdefault('history', []).append(entry)
+                offset_list.append(offset)
+                applied += 1
+
+            if applied > 0:
+                self._add_history_entry(
+                    op="center_x_multi",
+                    params={
+                        "column": x_name,
+                        "num_datasets": applied,
+                        "offset_list": offset_list,
+                        "applied_datasets": [ds.get('path') for ds in self.dataset_list],
+                    },
+                )
+
+            # Summarize offsets (only show non-zero for brevity)
+            non_zero = [o for o in offset_list if abs(o) > 0]
+            if non_zero:
+                offsets_summary = ", ".join(f"{o:.4g}" for o in non_zero[:6])
+                if len(non_zero) > 6:
+                    offsets_summary += ", ..."
+                msg = f"Centered {x_name} (offsets: {offsets_summary}) for {applied} dataset(s)"
+            else:
+                msg = f"{x_name} already centered for {applied} dataset(s)"
+            if failed:
+                msg += f"; {len(failed)} failed"
+
+            self.status.showMessage(msg)
+            self._replot()
+            return
+
+        # Single-dataset mode
+        if self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before applying corrections.")
+            return
+
+        # Capture original mean first for better messaging
+        orig_mean = float(self.df[x_name].mean(skipna=True))
+        self._apply_operation("center_x", {"column": x_name}, record=True)
+
+        if self.history and self.history[-1]["op"] == "center_x":
+            offset = self.history[-1]["params"].get("offset", 0.0)
+            if abs(offset) < 1e-12 * max(1.0, abs(self.df[x_name].max() - self.df[x_name].min())):
+                self.status.showMessage(f"{x_name} already centered (mean {orig_mean:.4g})")
+            else:
+                self.status.showMessage(f"Centered {x_name} about 0 (offset {offset:.4g})")
+        else:
+            self.status.showMessage(f"Centered {x_name} about 0")
 
         self._replot()
 
@@ -2609,7 +3236,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _drift_start_tails_mode(self):
         """Enter interactive high-field tails drift-correction mode."""
-        if self.df is None:
+        # Require either a single dataset (`self.df`) or multiple datasets
+        if not self.multi_mode and self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
+            return
+        if self.multi_mode and not self.dataset_list:
             QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
             return
         
@@ -2625,18 +3256,35 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         # Take a snapshot to work from
-        self._drift_df_before = self.df.copy(deep=True)
         self._drift_x_col = x_name
         self._drift_y_col = y_name
 
-        x = np.asarray(self._drift_df_before[x_name].to_numpy(), dtype=float)
-        x_finite = x[np.isfinite(x)]
-        if x_finite.size == 0:
-            QtWidgets.QMessageBox.warning(self, "No data", "Selected X column has no finite values.")
-            return
+        if self.multi_mode:
+            # Ensure each dataset has the columns and snapshot it
+            for ds in self.dataset_list:
+                df = ds.get('df')
+                if x_name not in df.columns or y_name not in df.columns:
+                    QtWidgets.QMessageBox.warning(self, "Missing columns",
+                                                  f"File {ds.get('path')} does not contain the selected columns.")
+                    return
+                ds['_drift_df_before'] = ds['df'].copy(deep=True)
 
-        # initial threshold: 80% of max |H|
-        self._drift_threshold = 0.8 * float(np.nanmax(np.abs(x_finite)))
+            x0 = self.dataset_list[0]['_drift_df_before'][x_name].to_numpy()
+            x_finite = x0[np.isfinite(x0)]
+            if x_finite.size == 0:
+                QtWidgets.QMessageBox.warning(self, "No data", "Selected X column has no finite values in first dataset.")
+                return
+            # initial threshold: 80% of max |H| from first dataset
+            self._drift_threshold = 0.8 * float(np.nanmax(np.abs(x_finite)))
+        else:
+            self._drift_df_before = self.df.copy(deep=True)
+            x = np.asarray(self._drift_df_before[x_name].to_numpy(), dtype=float)
+            x_finite = x[np.isfinite(x)]
+            if x_finite.size == 0:
+                QtWidgets.QMessageBox.warning(self, "No data", "Selected X column has no finite values.")
+                return
+            # initial threshold: 80% of max |H|
+            self._drift_threshold = 0.8 * float(np.nanmax(np.abs(x_finite)))
 
         # Activate mode
         self.drift_mode_active = True
@@ -2669,10 +3317,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _drift_linear_loopclosure_apply(self):
         """Apply linear drift correction so that first and last points coincide."""
-        if self.df is None:
-            QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
-            return
-
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
         if not y_name:
@@ -2688,27 +3332,170 @@ class MainWindow(QtWidgets.QMainWindow):
                 "column": y_name,
                 "end_window_fraction": 0.02,    # use first/last 2% of points
             }
-            self._apply_operation("drift_linear_loopclosure", params, record=True)
-            self.status.showMessage("Applied linear drift correction (loop closure).")
+            
+            # Multi-dataset mode: apply to all datasets
+            if self.multi_mode and self.dataset_list:
+                applied = 0
+                failed = []
+                slope_list = []  # Store slopes for replay
+                
+                for ds in self.dataset_list:
+                    df = ds.get('df')
+                    if df is None or y_name not in df.columns:
+                        failed.append((ds.get('path'), "Column not found"))
+                        slope_list.append(0.0)
+                        continue
+                    
+                    # Apply to this dataset using temporary df swap
+                    old_df = self.df
+                    self.df = df
+                    try:
+                        # Use a fresh copy of params for each dataset
+                        ds_params = dict(params)
+                        self._apply_operation("drift_linear_loopclosure", ds_params, record=False)
+                        ds['df'] = self.df
+                        
+                        # Extract the computed slope from the operation
+                        # The operation modifies params to include drift_slope
+                        slope = ds_params.get('drift_slope', 0.0)
+                        
+                        # Record per-dataset history
+                        entry = {
+                            "op": "drift_linear_loopclosure",
+                            "params": ds_params,
+                        }
+                        ds.setdefault('history', []).append(entry)
+                        slope_list.append(slope)
+                        applied += 1
+                    finally:
+                        self.df = old_df
+                
+                # Add global history entry
+                if applied > 0:
+                    self._add_history_entry(
+                        op="drift_linear_loopclosure_multi",
+                        params={
+                            "x_column": x_name,
+                            "column": y_name,
+                            "end_window_fraction": 0.02,
+                            "num_datasets": applied,
+                            "slope_list": slope_list,
+                            "applied_datasets": [ds.get('path') for ds in self.dataset_list],
+                        },
+                    )
+                
+                msg = f"Applied loop closure drift correction for {applied} dataset(s)"
+                if failed:
+                    msg += f"; {len(failed)} failed"
+                self.status.showMessage(msg)
+            else:
+                # Single-dataset mode
+                if self.df is None:
+                    QtWidgets.QMessageBox.warning(self, "No data", "Load data before drift correction.")
+                    return
+                
+                self._apply_operation("drift_linear_loopclosure", params, record=True)
+                self.status.showMessage("Applied linear drift correction (loop closure).")
+            
             self._replot()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Drift correction error", str(e))
 
     def _drift_update_preview(self):
         """Recompute and display drift-corrected loop for current tails threshold."""
-        if not self.drift_mode_active or self._drift_df_before is None:
+        if not self.drift_mode_active:
             return
 
-        df = self._drift_df_before
         xcol = self._drift_x_col
         ycol = self._drift_y_col
         thr = self._drift_threshold
 
-        x = np.asarray(df[xcol].to_numpy(), dtype=float)
-        y = np.asarray(df[ycol].to_numpy(), dtype=float)
-
         ax = self.canvas.ax
         ax.clear()
+
+        # Multi-dataset: overlay previews for each dataset
+        if self.multi_mode and self.dataset_list:
+            # Use sequential colormap to show progression
+            n_datasets = len(self.dataset_list)
+            if n_datasets <= 1:
+                colors = ['C0']
+            else:
+                cmap = plt.cm.viridis
+                color_positions = np.linspace(0.1, 0.9, n_datasets)
+                colors = [cmap(pos) for pos in color_positions]
+            
+            any_success = False
+            for idx, ds in enumerate(self.dataset_list):
+                df_before = ds.get('_drift_df_before', ds.get('df'))
+                df = df_before
+                x = np.asarray(df[xcol].to_numpy(), dtype=float)
+                y = np.asarray(df[ycol].to_numpy(), dtype=float)
+                label = os.path.basename(ds.get('path', f'data{idx}'))
+
+                # Plot raw faint loop for this dataset
+                ax.plot(x, y, linewidth=1.0, alpha=0.25, color=colors[idx], label=f"raw: {label}")
+
+                try:
+                    y_corr, info = self._compute_drift_tails(df, xcol, ycol, thr)
+                    ds['drift_info_preview'] = info
+                    ds['drift_y_corr_preview'] = y_corr
+                    any_success = True
+
+                    # Plot drift-corrected preview (thicker)
+                    ax.plot(x, y_corr, linewidth=1.5, color=colors[idx], label=f"drift: {label}")
+
+                    # Highlight tail points used for the fit in this dataset
+                    thr_abs = float(abs(info.get('threshold', thr)))
+                    finite = np.isfinite(x) & np.isfinite(y)
+                    mask_tail = finite & (np.abs(x) >= thr_abs)
+                    if mask_tail.sum() >= 2:
+                        ax.scatter(x[mask_tail], y_corr[mask_tail], s=10, marker=".", 
+                                  alpha=0.6, color=colors[idx])
+
+                except Exception:
+                    # on failure just continue (raw loop already plotted)
+                    ds['drift_info_preview'] = None
+                    ds['drift_y_corr_preview'] = None
+
+            # Draw symmetric vertical threshold guides
+            thr_abs = float(abs(thr))
+            self._drift_vline = ax.axvline(+thr_abs, linestyle='--')
+            ax.axvline(-thr_abs, linestyle='--')
+            ax.set_xlabel(self._format_x_axis_label(xcol))
+            ax.set_ylabel(self._format_y_axis_label(ycol) + ' (drift preview)')
+            ax.set_title(f'Preview: linear drift (multi, {len(self.dataset_list)} files)')
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best', fontsize=8)
+
+            # Update parameter panel from first successful preview if any
+            if any_success:
+                for ds in self.dataset_list:
+                    info = ds.get('drift_info_preview')
+                    if info:
+                        x0 = np.asarray(ds['_drift_df_before'][xcol].to_numpy(), dtype=float)
+                        y0_corr = ds.get('drift_y_corr_preview')
+                        hc_plus, hc_minus, hc_avg = self._compute_coercivity(x0, y0_corr)
+                        Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x0, y0_corr)
+                        self._set_param_labels(
+                            hc_plus=hc_plus, hc_minus=hc_minus, hc_avg=hc_avg,
+                            Mr_plus=Mr_plus, Mr_minus=Mr_minus, Mr_mag=Mr_mag,
+                            Ms=None, m_bg=None,
+                        )
+                        break
+
+            self.canvas.fig.canvas.draw_idle()
+            self.status.showMessage(
+                f"Drift mode (multi): |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply drift'."
+            )
+            return
+
+        # Single-dataset preview (backward compatible)
+        if getattr(self, '_drift_df_before', None) is None:
+            return
+
+        df = self._drift_df_before
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
 
         try:
             y_corr, info = self._compute_drift_tails(df, xcol, ycol, thr)
@@ -2794,7 +3581,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         # Optionally clamp to data range
-        x = np.asarray(self._drift_df_before[self._drift_x_col].to_numpy(), dtype=float)
+        if self.multi_mode and self.dataset_list:
+            # Use first dataset to determine range for clamping
+            x = np.asarray(self.dataset_list[0]['_drift_df_before'][self._drift_x_col].to_numpy(), dtype=float)
+        else:
+            x = np.asarray(getattr(self, '_drift_df_before', pd.DataFrame()).get(self._drift_x_col, pd.Series([])).to_numpy(), dtype=float)
+        
         x_finite = x[np.isfinite(x)]
         if x_finite.size:
             x_min, x_max = float(x_finite.min()), float(x_finite.max())
@@ -2822,7 +3614,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.drift_mode_active = False
         self._drift_disconnect_events()
 
-        self._drift_df_before = None
+        # Clear single-dataset snapshot if present
+        if hasattr(self, '_drift_df_before'):
+            try:
+                self._drift_df_before = None
+            except Exception:
+                pass
+
+        # Clear per-dataset previews if multi-mode
+        if self.multi_mode and self.dataset_list:
+            for ds in self.dataset_list:
+                for k in ('_drift_df_before', 'drift_info_preview', 'drift_y_corr_preview'):
+                    if k in ds:
+                        try:
+                            ds.pop(k, None)
+                        except Exception:
+                            pass
+
         self._drift_x_col = None
         self._drift_y_col = None
         self._drift_threshold = None
@@ -2840,7 +3648,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bg_start_mode(self):
         """Enter interactive background-subtraction mode."""
-        if self.df is None:
+        # Require either a single dataset (`self.df`) or multiple datasets
+        if not self.multi_mode and self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before background subtraction.")
+            return
+        if self.multi_mode and not self.dataset_list:
             QtWidgets.QMessageBox.warning(self, "No data", "Load data before background subtraction.")
             return
 
@@ -2855,18 +3667,34 @@ class MainWindow(QtWidgets.QMainWindow):
                                           "Select X and Y columns before background subtraction.")
             return
 
-        # Snapshot current df (this is the state we'll operate on)
-        self._bg_df_before = self.df.copy(deep=True)
+        # Snapshot current df(s) (these are the states we'll operate on)
         self._bg_x_col = x_name
         self._bg_y_col = y_name
 
-        x = self._bg_df_before[x_name].to_numpy()
-        if x.size == 0:
-            QtWidgets.QMessageBox.warning(self, "No data", "Selected X column is empty.")
-            return
+        if self.multi_mode:
+            # Ensure all datasets have the requested columns
+            for ds in self.dataset_list:
+                df = ds.get('df')
+                if x_name not in df.columns or y_name not in df.columns:
+                    QtWidgets.QMessageBox.warning(self, "Missing columns",
+                                                  f"File {ds.get('path')} does not contain the selected columns.")
+                    return
+                ds['_bg_df_before'] = ds['df'].copy(deep=True)
 
-        # Choose an initial threshold: e.g. 70% of max |x|
-        self._bg_threshold = 0.7 * float(np.nanmax(np.abs(x)))
+            # Choose an initial threshold from the first dataset's X range
+            x0 = self.dataset_list[0]['_bg_df_before'][x_name].to_numpy()
+            if x0.size == 0:
+                QtWidgets.QMessageBox.warning(self, "No data", "Selected X column is empty in first dataset.")
+                return
+            self._bg_threshold = 0.7 * float(np.nanmax(np.abs(x0)))
+        else:
+            self._bg_df_before = self.df.copy(deep=True)
+            x = self._bg_df_before[x_name].to_numpy()
+            if x.size == 0:
+                QtWidgets.QMessageBox.warning(self, "No data", "Selected X column is empty.")
+                return
+            # Choose an initial threshold: e.g. 70% of max |x|
+            self._bg_threshold = 0.7 * float(np.nanmax(np.abs(x)))
         
         self.bg_mode_active = True
         self.bgApplyBtn.setVisible(True)
@@ -2922,19 +3750,114 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _bg_update_preview(self):
         """Recompute and display BG-subtracted data."""
-        if not self.bg_mode_active or self._bg_df_before is None:
+        if not self.bg_mode_active:
             return
 
-        df = self._bg_df_before
         xcol = self._bg_x_col
         ycol = self._bg_y_col
         thr = self._bg_threshold
 
-        x = np.asarray(df[xcol].to_numpy(), dtype=float)
-        y = np.asarray(df[ycol].to_numpy(), dtype=float)
-
         ax = self.canvas.ax
         ax.clear()
+
+        # Multi-mode: overlay previews for each dataset
+        if self.multi_mode and self.dataset_list:
+            # Use sequential colormap to show progression
+            n_datasets = len(self.dataset_list)
+            if n_datasets <= 1:
+                colors = ['C0']
+            else:
+                cmap = plt.cm.viridis
+                color_positions = np.linspace(0.1, 0.9, n_datasets)
+                colors = [cmap(pos) for pos in color_positions]
+            
+            any_success = False
+            for idx, ds in enumerate(self.dataset_list):
+                df_before = ds.get('_bg_df_before', ds.get('df'))
+                df = df_before
+                x = np.asarray(df[xcol].to_numpy(), dtype=float)
+                y = np.asarray(df[ycol].to_numpy(), dtype=float)
+                label = os.path.basename(ds.get('path', f'data{idx}'))
+
+                # Plot raw faint loop for this dataset
+                ax.plot(x, y, linewidth=1.0, alpha=0.25, color=colors[idx], label=f"raw: {label}")
+
+                try:
+                    y_corr, info = self._compute_bg_corrected(df, xcol, ycol, thr)
+                    ds['bg_info_preview'] = info
+                    ds['bg_y_corr_preview'] = y_corr
+                    any_success = True
+
+                    # Plot BG-subtracted preview (thicker)
+                    ax.plot(x, y_corr, linewidth=1.5, color=colors[idx], label=f"BG: {label}")
+
+                    # dashed fit lines on ± branches for this dataset
+                    thr_abs = float(abs(info.get('threshold', thr)))
+                    finite = np.isfinite(x) & np.isfinite(y)
+                    mask_pos = finite & (x >= thr_abs)
+                    mask_neg = finite & (x <= -thr_abs)
+                    if mask_pos.sum() >= 2:
+                        x_pos = x[mask_pos]
+                        x_pos_line = np.linspace(x_pos.min(), x_pos.max(), 100)
+                        y_pos_fit = info.get('m_pos', 0.0) * x_pos_line + info.get('b_pos', 0.0)
+                        ax.plot(x_pos_line, y_pos_fit, linestyle='--', linewidth=1.0, color=colors[idx])
+                    if mask_neg.sum() >= 2:
+                        x_neg = x[mask_neg]
+                        x_neg_line = np.linspace(x_neg.min(), x_neg.max(), 100)
+                        y_neg_fit = info.get('m_neg', 0.0) * x_neg_line + info.get('b_neg', 0.0)
+                        ax.plot(x_neg_line, y_neg_fit, linestyle='--', linewidth=1.0, color=colors[idx])
+
+                except Exception:
+                    # on failure just continue (raw loop already plotted)
+                    ds['bg_info_preview'] = None
+                    ds['bg_y_corr_preview'] = None
+
+            # Draw symmetric vertical threshold guides
+            thr_abs = float(abs(thr))
+            self._bg_vline = ax.axvline(+thr_abs, linestyle='--')
+            ax.axvline(-thr_abs, linestyle='--')
+            ax.set_xlabel(self._format_x_axis_label(xcol))
+            ax.set_ylabel(self._format_y_axis_label(ycol) + ' (BG preview)')
+            ax.set_title(f'Preview: background subtraction ({len(self.dataset_list)} files)')
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc='best', fontsize=8)
+
+            # Update parameter panel from first successful preview if any
+            if any_success:
+                # prefer first dataset with a preview info
+                for ds in self.dataset_list:
+                    info = ds.get('bg_info_preview')
+                    if info:
+                        x0 = np.asarray(ds['_bg_df_before'][xcol].to_numpy(), dtype=float)
+                        y0_corr = ds.get('bg_y_corr_preview')
+                        hc_plus, hc_minus, hc_avg = self._compute_coercivity(x0, y0_corr)
+                        Mr_plus, Mr_minus, Mr_mag = self._compute_remanence(x0, y0_corr)
+                        Ms = 0.5 * (info.get('b_pos', 0.0) - info.get('b_neg', 0.0))
+                        noise_std = self._estimate_noise_from_bg_tails(x0, y0_corr, info, Ms)
+                        if noise_std is not None and noise_std > 0:
+                            Hs_plus, Hs_minus, Hs_mag = self._compute_saturation_field_noise_based(
+                                x0, y0_corr, Ms, noise_std, k=3
+                            )
+                        else:
+                            Hs_plus = Hs_minus = Hs_mag = None
+                        self._set_param_labels(
+                            hc_plus=hc_plus, hc_minus=hc_minus, hc_avg=hc_avg,
+                            Mr_plus=Mr_plus, Mr_minus=Mr_minus, Mr_mag=Mr_mag,
+                            Ms=Ms, m_bg=info.get('m_bg'),
+                            hs_plus=Hs_plus, hs_minus=Hs_minus, hs_mag=Hs_mag,
+                        )
+                        break
+
+            self.canvas.fig.canvas.draw_idle()
+            self.status.showMessage(f"Background mode (multi): |{xcol}| ≥ {thr_abs:.4g}; drag line, then 'Apply BG'.")
+            return
+
+        # Single-dataset preview (backward compatible)
+        if getattr(self, '_bg_df_before', None) is None:
+            return
+        df = self._bg_df_before
+        x = np.asarray(df[xcol].to_numpy(), dtype=float)
+        y = np.asarray(df[ycol].to_numpy(), dtype=float)
 
         try:
             y_corr, info = self._compute_bg_corrected(df, xcol, ycol, thr)
@@ -3094,20 +4017,80 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         # --- Background subtraction commit ---
         if self.bg_mode_active:
-            if self._bg_df_before is None:
-                return
-
-            df_before = self._bg_df_before
             xcol = self._bg_x_col
             ycol = self._bg_y_col
             thr = self._bg_threshold
 
+            # Multi-dataset: apply per-dataset using each dataset's _bg_df_before
+            if self.multi_mode and self.dataset_list:
+                applied = 0
+                failed = []
+                m_bg_list = []  # Store m_bg values for replay
+                for ds in self.dataset_list:
+                    df_before = ds.get('_bg_df_before', ds.get('df'))
+                    try:
+                        y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
+                    except Exception as e:
+                        failed.append((ds.get('path'), str(e)))
+                        ds['bg_info_preview'] = None
+                        m_bg_list.append(0.0)  # Placeholder for failed datasets
+                        continue
+
+                    # Commit to dataset's working df
+                    ds['df'] = df_before.copy(deep=True)
+                    ds['df'][ycol] = y_corr
+
+                    # Record per-dataset history entry
+                    entry = {
+                        "op": "bg_linear_branches",
+                        "params": {
+                            "x_column": xcol,
+                            "column": ycol,
+                            "threshold": info.get("threshold"),
+                            "m_pos": info.get("m_pos"),
+                            "b_pos": info.get("b_pos"),
+                            "m_neg": info.get("m_neg"),
+                            "b_neg": info.get("b_neg"),
+                            "m_bg": info.get("m_bg"),
+                        },
+                    }
+                    ds.setdefault('history', []).append(entry)
+                    m_bg_list.append(info.get("m_bg", 0.0))
+                    applied += 1
+
+                # Add a single global history entry for the multi-dataset operation
+                if applied > 0:
+                    self._add_history_entry(
+                        op="bg_linear_branches_multi",
+                        params={
+                            "x_column": xcol,
+                            "column": ycol,
+                            "threshold": thr,
+                            "num_datasets": applied,
+                            "m_bg_list": m_bg_list,
+                            "applied_datasets": [ds.get('path') for ds in self.dataset_list if '_bg_df_before' in ds],
+                        },
+                    )
+
+                # Exit BG mode and redraw
+                self._bg_exit_mode()
+                msg = f"Applied BG to {applied} dataset(s)"
+                if failed:
+                    msg += f"; {len(failed)} failed (see details)."
+                    # show a dialog summarising failures
+                    details = "\n".join([f"{p}: {err}" for p, err in failed])
+                    QtWidgets.QMessageBox.warning(self, "BG failures", details)
+
+                self.status.showMessage(msg)
+                self._replot()
+                return
+
+            # Single-dataset fallback (original behaviour)
+            if getattr(self, '_bg_df_before', None) is None:
+                return
+
+            df_before = self._bg_df_before
             try:
-                # Uses branch-based BG function:
-                #   y_corr, info = _compute_bg_corrected(df, xcol, ycol, threshold)
-                # where info = {
-                #   "m_pos", "b_pos", "m_neg", "b_neg", "m_bg", "threshold"
-                # }
                 y_corr, info = self._compute_bg_corrected(df_before, xcol, ycol, thr)
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Cannot apply background", str(e))
@@ -3144,18 +4127,75 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # --- Drift (high-field tails) commit ---
         if self.drift_mode_active:
-            if self._drift_df_before is None:
-                return
-
-            df_before = self._drift_df_before
             xcol = self._drift_x_col
             ycol = self._drift_y_col
             thr = self._drift_threshold
 
+            # Multi-dataset: apply per-dataset using each dataset's _drift_df_before
+            if self.multi_mode and self.dataset_list:
+                applied = 0
+                failed = []
+                slope_list = []  # Store slopes for replay
+                for ds in self.dataset_list:
+                    df_before = ds.get('_drift_df_before', ds.get('df'))
+                    try:
+                        y_corr, info = self._compute_drift_tails(df_before, xcol, ycol, thr)
+                    except Exception as e:
+                        failed.append((ds.get('path'), str(e)))
+                        ds['drift_info_preview'] = None
+                        slope_list.append(0.0)  # Placeholder for failed datasets
+                        continue
+
+                    # Commit to dataset's working df
+                    ds['df'] = df_before.copy(deep=True)
+                    ds['df'][ycol] = y_corr
+
+                    # Record per-dataset history entry
+                    entry = {
+                        "op": "drift_linear_tails",
+                        "params": {
+                            "x_column": xcol,
+                            "column": ycol,
+                            "threshold": info.get("threshold"),
+                            "drift_slope": info.get("slope"),
+                        },
+                    }
+                    ds.setdefault('history', []).append(entry)
+                    slope_list.append(info.get("slope", 0.0))
+                    applied += 1
+
+                # Add a single global history entry for the multi-dataset operation
+                if applied > 0:
+                    self._add_history_entry(
+                        op="drift_linear_tails_multi",
+                        params={
+                            "x_column": xcol,
+                            "column": ycol,
+                            "threshold": thr,
+                            "num_datasets": applied,
+                            "slope_list": slope_list,
+                            "applied_datasets": [ds.get('path') for ds in self.dataset_list if '_drift_df_before' in ds],
+                        },
+                    )
+
+                # Exit drift mode and redraw
+                self._drift_exit_mode()
+                msg = f"Applied drift to {applied} dataset(s)"
+                if failed:
+                    msg += f"; {len(failed)} failed (see details)."
+                    details = "\n".join([f"{p}: {err}" for p, err in failed])
+                    QtWidgets.QMessageBox.warning(self, "Drift failures", details)
+
+                self.status.showMessage(msg)
+                self._replot()
+                return
+
+            # Single-dataset fallback (original behaviour)
+            if getattr(self, '_drift_df_before', None) is None:
+                return
+
+            df_before = self._drift_df_before
             try:
-                # Uses your drift helper:
-                #   y_corr, info = _compute_drift_tails(df, xcol, ycol, threshold)
-                # where info = { "slope", "threshold" }
                 y_corr, info = self._compute_drift_tails(df_before, xcol, ycol, thr)
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Cannot apply drift", str(e))
@@ -3194,9 +4234,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.bg_mode_active:
             if not self.bg_mode_active:
                 return
-            # Just restore df_before and exit
-            if self._bg_df_before is not None:
-                self.df = self._bg_df_before
+            # Just restore df_before(s) and exit
+            if self.multi_mode and self.dataset_list:
+                for ds in self.dataset_list:
+                    if '_bg_df_before' in ds:
+                        ds['df'] = ds['_bg_df_before']
+            else:
+                if getattr(self, '_bg_df_before', None) is not None:
+                    self.df = self._bg_df_before
 
             self._bg_exit_mode()
             self.status.showMessage("Background subtraction canceled.")
@@ -3204,8 +4249,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         if self.drift_mode_active:
-            if self._drift_df_before is not None:
-                self.df = self._drift_df_before
+            # Just restore df_before(s) and exit
+            if self.multi_mode and self.dataset_list:
+                for ds in self.dataset_list:
+                    if '_drift_df_before' in ds:
+                        ds['df'] = ds['_drift_df_before']
+            else:
+                if getattr(self, '_drift_df_before', None) is not None:
+                    self.df = self._drift_df_before
             self._drift_exit_mode()
             self.status.showMessage("Drift correction canceled.")
             self._replot()
@@ -3217,7 +4268,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bgCancelBtn.setVisible(False)
         self._bg_disconnect_events()
 
-        self._bg_df_before = None
+        # Clear single-dataset snapshot if present
+        if hasattr(self, '_bg_df_before'):
+            try:
+                self._bg_df_before = None
+            except Exception:
+                pass
+
+        # Clear per-dataset previews if multi-mode
+        if self.multi_mode and self.dataset_list:
+            for ds in self.dataset_list:
+                for k in ('_bg_df_before', 'bg_info_preview', 'bg_y_corr_preview'):
+                    if k in ds:
+                        try:
+                            ds.pop(k, None)
+                        except Exception:
+                            pass
+
         self._bg_x_col = None
         self._bg_y_col = None
         self._bg_threshold = None
@@ -3239,6 +4306,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Actions that modify data or history
         for act in [
             getattr(self, "centerYAct", None),
+            getattr(self, "centerXAct", None),
             getattr(self, "undoAct", None),
             getattr(self, "bgAct", None),         # no nested BG inside BG mode
             getattr(self, "driftTailsAct", None),
@@ -3782,12 +4850,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_volume_normalisation_dialog(self):
         """Open the volume normalisation dialog and apply if accepted."""
-        if self.df is None:
+        y_name = self.yCombo.currentText()
+        
+        # Check if we have data and valid column
+        if self.multi_mode and self.dataset_list:
+            # Check if y_name exists in first dataset
+            if not y_name or y_name not in self.dataset_list[0]['df'].columns:
+                QtWidgets.QMessageBox.warning(
+                    self, "Select Y column",
+                    "Select a Y column (moment or magnetisation) before volume normalisation."
+                )
+                return
+        elif self.df is None:
             QtWidgets.QMessageBox.warning(self, "No data", "Load data before volume normalisation.")
             return
-
-        y_name = self.yCombo.currentText()
-        if not y_name or y_name not in self.df.columns:
+        elif not y_name or y_name not in self.df.columns:
             QtWidgets.QMessageBox.warning(
                 self, "Select Y column",
                 "Select a Y column (moment or magnetisation) before volume normalisation."
@@ -3825,8 +4902,69 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         try:
-            # Apply the numeric scaling
-            self._apply_operation("volume_normalisation", params, record=True)
+            # Multi-dataset mode: apply to all datasets
+            if self.multi_mode and self.dataset_list:
+                applied = 0
+                failed = []
+                scale_factor_list = []
+                
+                for ds in self.dataset_list:
+                    df = ds.get('df')
+                    if df is None or y_name not in df.columns:
+                        failed.append((ds.get('path'), "Column not found"))
+                        scale_factor_list.append(1.0)
+                        continue
+                    
+                    # Apply to this dataset using temporary df swap
+                    old_df = self.df
+                    self.df = df
+                    try:
+                        self._apply_operation("volume_normalisation", params, record=False)
+                        ds['df'] = self.df
+                        
+                        # Record per-dataset history
+                        # Extract scale_factor that was computed
+                        if self.history and self.history[-1]['op'] == 'volume_normalisation':
+                            sf = self.history[-1]['params'].get('scale_factor', 1.0)
+                            self.history.pop()  # Remove the temp entry
+                        else:
+                            sf = 1.0
+                        
+                        entry = {
+                            "op": "volume_normalisation",
+                            "params": dict(params, scale_factor=sf),
+                        }
+                        ds.setdefault('history', []).append(entry)
+                        scale_factor_list.append(sf)
+                        applied += 1
+                    finally:
+                        self.df = old_df
+                
+                # Add global history entry
+                if applied > 0:
+                    self._add_history_entry(
+                        op="volume_normalisation_multi",
+                        params={
+                            "column": y_name,
+                            "current_quantity": current_quantity,
+                            "target_quantity": target_quantity,
+                            "direction": direction,
+                            "system": system,
+                            "volume_value": vol_value,
+                            "volume_units": vol_units,
+                            "num_datasets": applied,
+                            "scale_factor_list": scale_factor_list,
+                            "applied_datasets": [ds.get('path') for ds in self.dataset_list],
+                        },
+                    )
+                
+                msg = f"Volume normalisation: {current_quantity} → {target_quantity} for {applied} dataset(s)"
+                if failed:
+                    msg += f"; {len(failed)} failed"
+            else:
+                # Single-dataset mode
+                self._apply_operation("volume_normalisation", params, record=True)
+                msg = f"Volume normalisation: {current_quantity} → {target_quantity} (V={vol_value:g} {vol_units}, system={system})"
 
             # Update semantic state before replotting, so labels use it
             self.y_quantity_type = target_quantity   # 'M' or 'm' after conversion
@@ -3835,23 +4973,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Now replot with the new semantics
             self._replot()
-
-            self.status.showMessage(
-                f"Volume normalisation: {current_quantity} → {target_quantity} "
-                f"(V={vol_value:g} {vol_units}, system={system})"
-            )
+            self.status.showMessage(msg)
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Volume normalisation error", str(e))
 
     def _open_unit_convert_dialog(self):
         """Open the unit conversion dialog and apply conversion if accepted."""
-        if self.df is None:
-            QtWidgets.QMessageBox.warning(self, "No data", "Load data before converting units.")
-            return
-
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
+        
+        # Check if we have data
+        if self.multi_mode and self.dataset_list:
+            if not self.dataset_list:
+                QtWidgets.QMessageBox.warning(self, "No data", "Load data before converting units.")
+                return
+        elif self.df is None:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before converting units.")
+            return
+        
         if not x_name or not y_name:
             QtWidgets.QMessageBox.warning(
                 self, "Select columns",
@@ -3921,8 +5061,62 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
         try:
-            # Apply numeric conversion first
-            self._apply_operation("unit_convert", params, record=True)
+            # Multi-dataset mode: apply to all datasets
+            if self.multi_mode and self.dataset_list:
+                applied = 0
+                failed = []
+                
+                for ds in self.dataset_list:
+                    df = ds.get('df')
+                    if df is None:
+                        failed.append((ds.get('path'), "No dataframe"))
+                        continue
+                    
+                    # Check columns exist
+                    if (convert_x and x_name not in df.columns) or (convert_y and y_name not in df.columns):
+                        failed.append((ds.get('path'), "Column not found"))
+                        continue
+                    
+                    # Apply to this dataset using temporary df swap
+                    old_df = self.df
+                    self.df = df
+                    try:
+                        self._apply_operation("unit_convert", params, record=False)
+                        ds['df'] = self.df
+                        
+                        # Record per-dataset history
+                        entry = {
+                            "op": "unit_convert",
+                            "params": params,
+                        }
+                        ds.setdefault('history', []).append(entry)
+                        applied += 1
+                    finally:
+                        self.df = old_df
+                
+                # Add global history entry
+                if applied > 0:
+                    self._add_history_entry(
+                        op="unit_convert_multi",
+                        params={
+                            "from_system": from_sys,
+                            "to_system": to_sys,
+                            "field_column": x_name if convert_x else None,
+                            "mag_column": y_name if convert_y else None,
+                            "field_quantity": x_q,
+                            "mag_quantity": y_q,
+                            "num_datasets": applied,
+                            "applied_datasets": [ds.get('path') for ds in self.dataset_list],
+                        },
+                    )
+                
+                msg = f"Converted units: {from_sys} → {to_sys} (X: {x_q or '-'}, Y: {y_q or '-'}) for {applied} dataset(s)"
+                if failed:
+                    msg += f"; {len(failed)} failed"
+            else:
+                # Single-dataset mode
+                self._apply_operation("unit_convert", params, record=True)
+                msg = f"Converted units: {from_sys} → {to_sys} (X: {x_q or '-'}, Y: {y_q or '-'})"
 
             # ✅ NOW update axis meaning/state BEFORE replotting
             if convert_x and x_q is not None:
@@ -3936,11 +5130,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             # Replot with updated state so labels use H/B/M/m + units
             self._replot()
-
-            self.status.showMessage(
-                f"Converted units: {from_sys} → {to_sys} "
-                f"(X: {x_q or '-'}, Y: {y_q or '-'})"
-            )
+            self.status.showMessage(msg)
 
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Unit conversion error", str(e))
@@ -4386,6 +5576,48 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def undo_last_operation(self):
         """Remove the last operation from history and rebuild df from scratch."""
+        # Handle multi-dataset mode
+        if self.multi_mode and self.dataset_list:
+            if not self.history:
+                QtWidgets.QMessageBox.information(self, "Nothing to undo",
+                                                  "There are no operations to undo.")
+                return
+
+            # Remove last operation from global history
+            last = self.history.pop()
+            last_op = last['op']
+
+            # If it's a multi-dataset operation, also remove the last operation
+            # from each dataset's per-dataset history (they were added during commit)
+            if last_op.endswith('_multi'):
+                # Remove the corresponding single-dataset operation from each dataset
+                base_op = last_op.replace('_multi', '')
+                for ds in self.dataset_list:
+                    ds_history = ds.get('history', [])
+                    # Remove the last occurrence of the base operation if it matches
+                    if ds_history and ds_history[-1]['op'] == base_op:
+                        ds_history.pop()
+
+            # Rebuild each dataset from its original + per-dataset history
+            for ds in self.dataset_list:
+                original = ds.get('original_df')
+                if original is None:
+                    continue
+                
+                # Reset to original
+                ds['df'] = original.copy(deep=True)
+                
+                # Replay per-dataset history
+                ds_history = ds.get('history', [])
+                for entry in ds_history:
+                    self._apply_operation_to_dataset(ds, entry["op"], entry["params"])
+
+            # Update status + plot
+            self.status.showMessage(f"Undid: {last['op']}")
+            self._replot()
+            return
+
+        # Single-dataset mode
         if not self.history:
             QtWidgets.QMessageBox.information(self, "Nothing to undo",
                                               "There are no operations to undo.")
@@ -4400,6 +5632,21 @@ class MainWindow(QtWidgets.QMainWindow):
         # Update status + plot
         self.status.showMessage(f"Undid: {last['op']}")
         self._replot()
+
+    def _apply_operation_to_dataset(self, ds, op, params):
+        """Apply a single operation to a dataset dict (modifies ds['df'] in place)."""
+        df = ds.get('df')
+        if df is None:
+            return
+
+        # Temporarily swap self.df with ds['df'] so _apply_operation works
+        old_df = self.df
+        self.df = df
+        try:
+            self._apply_operation(op, params, record=False)
+            ds['df'] = self.df
+        finally:
+            self.df = old_df
 
     def _rebuild_df_from_history(self):
         """Reset df to original_df and replay all history entries."""
@@ -4470,8 +5717,167 @@ class MainWindow(QtWidgets.QMainWindow):
 
         return loop_df
     
+    def _export_multi_datasets_to_txt(self):
+        """
+        Export all datasets in multi-mode to separate TXT files.
+        Each file is named with a numeric suffix (1, 2, 3...).
+        """
+        if not self.dataset_list:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot export",
+                "No datasets loaded."
+            )
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot export",
+                "No valid X/Y columns selected."
+            )
+            return
+
+        # Ask for base filename
+        base_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export multi-datasets to TXT (base name)",
+            "",
+            "Text files (*.txt);;All files (*.*)",
+        )
+        if not base_path:
+            return
+
+        # Remove .txt extension if present (we'll add it back with suffix)
+        if base_path.endswith('.txt'):
+            base_path = base_path[:-4]
+
+        successful_exports = 0
+        failed_exports = []
+
+        for i, ds in enumerate(self.dataset_list, start=1):
+            df = ds['df']
+            if df is None or x_name not in df.columns or y_name not in df.columns:
+                failed_exports.append(f"Dataset {i} (missing columns)")
+                continue
+
+            x_series = df[x_name]
+            y_series = df[y_name]
+
+            if not (np.issubdtype(x_series.dtype, np.number) and
+                    np.issubdtype(y_series.dtype, np.number)):
+                failed_exports.append(f"Dataset {i} (non-numeric columns)")
+                continue
+
+            loop_df = pd.DataFrame({
+                x_name: x_series.to_numpy(),
+                y_name: y_series.to_numpy(),
+            })
+
+            out_path = f"{base_path}_{i}.txt"
+            try:
+                loop_df.to_csv(
+                    out_path,
+                    sep="\t",
+                    index=False,
+                    float_format="%.10g",
+                )
+                successful_exports += 1
+            except Exception as e:
+                failed_exports.append(f"Dataset {i} ({e})")
+
+        # Report results
+        if successful_exports == len(self.dataset_list):
+            self.status.showMessage(f"Exported {successful_exports} datasets successfully")
+        elif successful_exports > 0:
+            msg = f"Exported {successful_exports}/{len(self.dataset_list)} datasets.\n"
+            msg += f"Failed: {', '.join(failed_exports)}"
+            QtWidgets.QMessageBox.warning(self, "Partial export", msg)
+        else:
+            QtWidgets.QMessageBox.critical(
+                self, "Export failed",
+                f"Failed to export any datasets:\n{chr(10).join(failed_exports)}"
+            )
+
+    def _copy_multi_datasets_to_clipboard(self):
+        """
+        Copy all datasets to clipboard as tab-separated text.
+        Each dataset is separated by a blank line and labeled.
+        """
+        if not self.dataset_list:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot copy",
+                "No datasets loaded."
+            )
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot copy",
+                "No valid X/Y columns selected."
+            )
+            return
+
+        from io import StringIO
+        buf = StringIO()
+        successful_copies = 0
+
+        for i, ds in enumerate(self.dataset_list, start=1):
+            df = ds['df']
+            if df is None or x_name not in df.columns or y_name not in df.columns:
+                continue
+
+            x_series = df[x_name]
+            y_series = df[y_name]
+
+            if not (np.issubdtype(x_series.dtype, np.number) and
+                    np.issubdtype(y_series.dtype, np.number)):
+                continue
+
+            loop_df = pd.DataFrame({
+                x_name: x_series.to_numpy(),
+                y_name: y_series.to_numpy(),
+            })
+
+            # Add a header for each dataset
+            dataset_name = ds.get('path', f'Dataset {i}')
+            buf.write(f"# Dataset {i}: {dataset_name}\n")
+            
+            # Write the data
+            loop_df.to_csv(
+                buf,
+                sep="\t",
+                index=False,
+                float_format="%.10g",
+            )
+            
+            # Add blank line between datasets
+            buf.write("\n")
+            successful_copies += 1
+
+        if successful_copies == 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Cannot copy",
+                "No valid datasets to copy."
+            )
+            return
+
+        text = buf.getvalue()
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(text)
+
+        self.status.showMessage(
+            f"Copied {successful_copies} datasets to clipboard"
+        )
+
     def _export_current_loop_to_txt(self):
         """Export the current X/Y loop to a tab-separated .txt file."""
+        if self.multi_mode:
+            self._export_multi_datasets_to_txt()
+            return
+
         loop_df = self._get_current_loop_dataframe()
         if loop_df is None:
             QtWidgets.QMessageBox.warning(
@@ -4507,6 +5913,10 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def _copy_current_loop_to_clipboard(self):
         """Copy the current X/Y loop as tab-separated text to the clipboard."""
+        if self.multi_mode:
+            self._copy_multi_datasets_to_clipboard()
+            return
+
         loop_df = self._get_current_loop_dataframe()
         if loop_df is None:
             QtWidgets.QMessageBox.warning(
