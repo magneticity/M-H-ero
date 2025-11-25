@@ -791,12 +791,6 @@ class SetAxesDialog(QtWidgets.QDialog):
         formX.addRow("Unit system for X:", self.xSystemCombo)
         layout.addLayout(formX)
 
-        # Help button for unit systems
-        help_btn = QtWidgets.QPushButton("? Help")
-        help_btn.setMaximumWidth(60)
-        help_btn.clicked.connect(lambda: UnitHelpDialog(self).exec())
-        formX.addRow("", help_btn)
-
         # --- Y axis group ---
         groupY = QtWidgets.QGroupBox("Y axis quantity")
         y_layout = QtWidgets.QVBoxLayout(groupY)
@@ -865,13 +859,21 @@ class SetAxesDialog(QtWidgets.QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # OK / Cancel
+        # OK / Cancel + Help button (bottom row)
+        btn_layout = QtWidgets.QHBoxLayout()
+        help_btn = QtWidgets.QPushButton("? Help")
+        help_btn.setMaximumWidth(60)
+        help_btn.clicked.connect(lambda: UnitHelpDialog(self).exec())
+        btn_layout.addWidget(help_btn)
+        btn_layout.addStretch(1)
+        
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        btn_layout.addWidget(buttons)
+        layout.addLayout(btn_layout)
 
     def get_selection(self):
         """
