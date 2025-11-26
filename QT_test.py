@@ -1296,6 +1296,65 @@ class MainWindow(QtWidgets.QMainWindow):
         vbox.setContentsMargins(8, 8, 8, 8)
         vbox.setSpacing(6)
 
+        # Logo and toolbar at the top
+        logo_layout = QtWidgets.QHBoxLayout()
+        logo_layout.setContentsMargins(0, 0, 0, 8)
+        
+        # Try to load logo
+        try:
+            import os
+            from PySide6.QtGui import QPixmap
+            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Logo', 'logo_white.png')
+            if os.path.exists(logo_path):
+                self.logo_label = QtWidgets.QLabel()
+                pixmap = QPixmap(logo_path)
+                if not pixmap.isNull():
+                    # Get device pixel ratio for high-DPI displays (Retina, etc.)
+                    dpr = self.devicePixelRatio()
+                    target_height = 50
+                    
+                    # Scale considering device pixel ratio for crisp rendering
+                    scaled_pixmap = pixmap.scaledToHeight(
+                        int(target_height * dpr),
+                        QtCore.Qt.TransformationMode.SmoothTransformation
+                    )
+                    scaled_pixmap.setDevicePixelRatio(dpr)
+                    
+                    self.logo_label.setPixmap(scaled_pixmap)
+                    self.logo_label.setMaximumHeight(int(target_height + 5))
+                    self.logo_label.setScaledContents(False)
+                    
+                    logo_layout.addWidget(self.logo_label)
+                    logo_layout.addSpacing(20)
+        except Exception as e:
+            print(f"Logo loading failed: {e}")
+        
+        # Toolbar buttons (always add these)
+        self.openFileToolBtn = QtWidgets.QToolButton()
+        self.openFileToolBtn.setText("📁 Open File")
+        self.openFileToolBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.openFileToolBtn.setMinimumHeight(35)
+        self.openFileToolBtn.clicked.connect(self.open_file)
+        
+        self.exportToolBtn = QtWidgets.QToolButton()
+        self.exportToolBtn.setText("💾 Export TXT")
+        self.exportToolBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.exportToolBtn.setMinimumHeight(35)
+        self.exportToolBtn.clicked.connect(self._export_current_loop_to_txt)
+        
+        self.autoProcessToolBtn = QtWidgets.QToolButton()
+        self.autoProcessToolBtn.setText("⚡ Auto-Process")
+        self.autoProcessToolBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.autoProcessToolBtn.setMinimumHeight(35)
+        self.autoProcessToolBtn.setToolTip("Apply automatic processing sequence (best-guess)")
+        self.autoProcessToolBtn.clicked.connect(self.auto_process)
+        
+        logo_layout.addWidget(self.openFileToolBtn)
+        logo_layout.addWidget(self.exportToolBtn)
+        logo_layout.addWidget(self.autoProcessToolBtn)
+        logo_layout.addStretch(1)
+        vbox.addLayout(logo_layout)
+
         # Controls row
         controls = QtWidgets.QWidget()
         h = QtWidgets.QHBoxLayout(controls)
@@ -3106,6 +3165,253 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.status.showMessage(f"Centered {x_name} about 0")
 
+        self._replot()
+
+    def auto_process(self):
+        """Automatically apply a best-guess sequence of processing steps:
+        1. Center X and Y about zero
+        2. Apply drift correction if drift is detected
+        3. Apply background correction with auto-detected threshold
+        """
+        if self.multi_mode and self.dataset_list:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Multi-dataset mode",
+                "Auto-process is currently only available in single-dataset mode."
+            )
+            return
+
+        # Check we have data and columns selected
+        if self.df is None or self.df.empty:
+            QtWidgets.QMessageBox.warning(self, "No data", "Load a file first.")
+            return
+
+        x_name = self.xCombo.currentText()
+        y_name = self.yCombo.currentText()
+        if not x_name or not y_name:
+            QtWidgets.QMessageBox.warning(
+                self, "No columns", "Select X and Y columns first."
+            )
+            return
+
+        # Verify columns are numeric
+        if x_name not in self.df.columns or y_name not in self.df.columns:
+            QtWidgets.QMessageBox.warning(self, "Invalid columns", "Selected columns not found in data.")
+            return
+
+        x_col = self.df[x_name]
+        y_col = self.df[y_name]
+        if not np.issubdtype(x_col.dtype, np.number) or not np.issubdtype(y_col.dtype, np.number):
+            QtWidgets.QMessageBox.warning(self, "Non-numeric", "Selected columns must be numeric.")
+            return
+
+        steps_applied = []
+
+        # Step 1: Center X and Y
+        try:
+            self.center_x_about_zero()
+            steps_applied.append("Center X")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Center X failed", str(e))
+            return
+
+        try:
+            self.center_y_about_zero()
+            steps_applied.append("Center Y")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Center Y failed", str(e))
+            return
+
+        # Step 2: Detect and apply drift correction
+        try:
+            drift_detected, drift_threshold = self._detect_drift(x_name, y_name)
+            if drift_detected:
+                # Apply drift correction with detected threshold
+                self._apply_drift_correction_auto(x_name, y_name, drift_threshold)
+                steps_applied.append(f"Drift correction (threshold={drift_threshold:.4g})")
+        except Exception as e:
+            # Non-critical - continue without drift correction
+            print(f"Drift detection/correction failed: {e}")
+
+        # Step 3: Detect and apply background correction
+        try:
+            bg_threshold = self._detect_background_threshold(x_name, y_name)
+            if bg_threshold is not None:
+                # Apply background correction with detected threshold
+                self._apply_bg_correction_auto(x_name, y_name, bg_threshold)
+                steps_applied.append(f"Background correction (threshold={bg_threshold:.4g})")
+        except Exception as e:
+            # Non-critical - continue
+            print(f"Background detection/correction failed: {e}")
+
+        # Show summary
+        summary = "Auto-process completed:\\n" + "\\n".join(f"• {step}" for step in steps_applied)
+        QtWidgets.QMessageBox.information(self, "Auto-process complete", summary)
+        self.status.showMessage(f"Auto-processed: {', '.join(steps_applied)}")
+
+    def _detect_drift(self, x_name, y_name):
+        """Detect if drift correction is needed by comparing first/last points at high field.
+        
+        Returns:
+            (drift_detected, threshold): Boolean and suggested threshold value
+        """
+        x = np.asarray(self.df[x_name].to_numpy(), dtype=float)
+        y = np.asarray(self.df[y_name].to_numpy(), dtype=float)
+        
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 10:
+            return False, None
+        
+        x = x[finite]
+        y = y[finite]
+        
+        # Find maximum field value
+        x_max = np.max(np.abs(x))
+        
+        # Look at points in top 20% of field range
+        high_field_threshold = 0.8 * x_max
+        
+        # Get first and last high-field points
+        high_field_mask = np.abs(x) >= high_field_threshold
+        if high_field_mask.sum() < 2:
+            return False, None
+        
+        high_field_indices = np.where(high_field_mask)[0]
+        first_idx = high_field_indices[0]
+        last_idx = high_field_indices[-1]
+        
+        # Check if they're at opposite fields (one positive, one negative)
+        if x[first_idx] * x[last_idx] > 0:
+            # Both same sign - not a proper loop, can't detect drift this way
+            return False, None
+        
+        # Compare y values at these high-field points
+        y_first = y[first_idx]
+        y_last = y[last_idx]
+        
+        # For a proper closed hysteresis loop at high field, y_first and y_last should
+        # have similar magnitude. Drift causes them to differ.
+        # Compare the absolute difference against the y-range
+        y_range = np.max(y) - np.min(y)
+        if y_range == 0:
+            return False, None
+        
+        # The midpoint between first and last should be near zero for no drift
+        y_midpoint = (y_first + y_last) / 2.0
+        drift_magnitude = np.abs(y_midpoint) / y_range
+        
+        # Drift detected if midpoint is > 5% of range from zero
+        if drift_magnitude > 0.05:
+            # Suggest threshold at 80% of max field
+            return True, high_field_threshold
+        
+        return False, None
+
+    def _detect_background_threshold(self, x_name, y_name):
+        """Detect appropriate threshold for background correction by testing linearity.
+        
+        Returns:
+            threshold: Suggested threshold value, or None if background correction not needed
+        """
+        x = np.asarray(self.df[x_name].to_numpy(), dtype=float)
+        y = np.asarray(self.df[y_name].to_numpy(), dtype=float)
+        
+        finite = np.isfinite(x) & np.isfinite(y)
+        if finite.sum() < 10:
+            return None
+        
+        x = x[finite]
+        y = y[finite]
+        
+        x_max = np.max(np.abs(x))
+        
+        # Test multiple threshold candidates (50%, 60%, 70%, 80% of max field)
+        candidates = [0.5, 0.6, 0.7, 0.8]
+        best_threshold = None
+        best_linearity = 0
+        
+        for frac in candidates:
+            threshold = frac * x_max
+            
+            # Check linearity at this threshold (use already-filtered x, y arrays)
+            mask_pos = x >= threshold
+            mask_neg = x <= -threshold
+            
+            if mask_pos.sum() < 3 or mask_neg.sum() < 3:
+                continue
+            
+            # Fit lines to positive and negative branches
+            x_pos, y_pos = x[mask_pos], y[mask_pos]
+            x_neg, y_neg = x[mask_neg], y[mask_neg]
+            
+            try:
+                # Linear fits
+                p_pos = np.polyfit(x_pos, y_pos, 1)
+                p_neg = np.polyfit(x_neg, y_neg, 1)
+                
+                # Evaluate R² for both fits
+                y_pos_fit = np.polyval(p_pos, x_pos)
+                y_neg_fit = np.polyval(p_neg, x_neg)
+                
+                ss_res_pos = np.sum((y_pos - y_pos_fit)**2)
+                ss_tot_pos = np.sum((y_pos - np.mean(y_pos))**2)
+                r2_pos = 1 - (ss_res_pos / ss_tot_pos) if ss_tot_pos > 0 else 0
+                
+                ss_res_neg = np.sum((y_neg - y_neg_fit)**2)
+                ss_tot_neg = np.sum((y_neg - np.mean(y_neg))**2)
+                r2_neg = 1 - (ss_res_neg / ss_tot_neg) if ss_tot_neg > 0 else 0
+                
+                # Average R² as measure of linearity
+                avg_r2 = 0.5 * (r2_pos + r2_neg)
+                
+                # Check if slope is significant (not already flat)
+                avg_slope = 0.5 * (abs(p_pos[0]) + abs(p_neg[0]))
+                y_range = np.max(np.abs(y)) - np.min(np.abs(y))
+                normalized_slope = avg_slope * x_max / y_range if y_range > 0 else 0
+                
+                # Good background if linear (R² > 0.95) and slope is significant (> 2% of range)
+                if avg_r2 > 0.95 and normalized_slope > 0.02 and avg_r2 > best_linearity:
+                    best_linearity = avg_r2
+                    best_threshold = threshold
+                    
+            except Exception:
+                continue
+        
+        return best_threshold
+
+    def _apply_drift_correction_auto(self, x_name, y_name, threshold):
+        """Apply drift correction with the detected threshold."""
+        # Use the existing drift correction logic
+        params = {
+            "x_column": x_name,
+            "column": y_name,
+            "threshold": threshold,
+        }
+        self._apply_operation("drift_linear_tails", params, record=True)
+        self._replot()
+
+    def _apply_bg_correction_auto(self, x_name, y_name, threshold):
+        """Apply background correction with the detected threshold."""
+        try:
+            y_corr, info = self._compute_bg_corrected(self.df, x_name, y_name, threshold)
+        except Exception as e:
+            raise ValueError(f"Background correction failed: {e}")
+        
+        # Apply the computed correction
+        self.df[y_name] = y_corr
+        
+        # Record the operation with all computed parameters
+        params = {
+            "x_column": x_name,
+            "column": y_name,
+            "threshold": info["threshold"],
+            "m_pos": info["m_pos"],
+            "b_pos": info["b_pos"],
+            "m_neg": info["m_neg"],
+            "b_neg": info["b_neg"],
+            "m_bg": info["m_bg"],
+        }
+        self._add_history_entry("bg_linear_branches", params)
         self._replot()
 
     def _compute_bg_corrected(self, df, xcol, ycol, threshold):
