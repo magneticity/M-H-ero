@@ -28,32 +28,44 @@
 
 **Prerequisites:**
 - Python 3.8 or higher
-- Virtual environment with dependencies
+- Git
 
-**Setup:**
+**Quick Build (Recommended):**
 ```bash
 # Clone the repository
 git clone https://github.com/magneticity/M-H-ero.git
 cd M-H-ero
 
-# Create and activate virtual environment (if not already done)
+# Run the complete setup and build script
+./setup_and_build.sh
+
+# The executable will be in the 'dist' folder
+```
+
+**Manual Setup:**
+```bash
+# Clone the repository
+git clone https://github.com/magneticity/M-H-ero.git
+cd M-H-ero
+
+# Create and activate virtual environment
 python3 -m venv env
 source env/bin/activate  # On Windows: env\Scripts\activate
 
 # Install dependencies
 pip install PySide6 matplotlib numpy pandas
 
-# Run the application
+# Run the application directly
 python "M(H)ero.py"
 ```
 
-**Building Executable:**
+**Building Executable (Manual):**
 ```bash
 # Install PyInstaller
 pip install pyinstaller
 
 # Run the build script
-./build_app.sh
+./build_simple.sh
 
 # The executable will be in the 'dist' folder
 ```
