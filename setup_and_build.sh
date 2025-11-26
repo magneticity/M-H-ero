@@ -34,8 +34,8 @@ echo ""
 
 # Install/upgrade pip
 echo "Upgrading pip..."
-pip install --upgrade pip --quiet
-echo "✓ pip upgraded"
+./env/bin/python -m pip install --upgrade pip --quiet
+echo "  ✓ pip upgraded"
 echo ""
 
 # Install dependencies
@@ -44,14 +44,14 @@ echo "  - PySide6"
 echo "  - matplotlib"
 echo "  - numpy"
 echo "  - pandas"
-pip install PySide6 matplotlib numpy pandas --quiet
-echo "✓ Dependencies installed"
+./env/bin/pip install PySide6 matplotlib numpy pandas --quiet
+echo "  ✓ Dependencies installed"
 echo ""
 
 # Install PyInstaller
 echo "Installing PyInstaller..."
-pip install pyinstaller --quiet
-echo "✓ PyInstaller installed"
+./env/bin/pip install pyinstaller --quiet
+echo "  ✓ PyInstaller installed"
 echo ""
 
 # Clean previous builds
@@ -70,7 +70,8 @@ echo ""
 echo "This may take a few minutes..."
 echo ""
 
-pyinstaller "M(H)ero.spec" --clean
+# Use the venv's pyinstaller explicitly
+./env/bin/pyinstaller "M(H)ero.spec" --clean
 
 echo ""
 echo "================================================"

@@ -1,13 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec file for M(H)ero
+# Works on macOS, Windows, and Linux
+
+import sys
 
 block_cipher = None
+
+# Platform-specific data separator
+if sys.platform == 'win32':
+    logo_data = ('Logo', 'Logo')
+else:
+    logo_data = ('Logo', 'Logo')
 
 a = Analysis(
     ['M(H)ero.py'],
     pathex=[],
     binaries=[],
-    datas=[('Logo', 'Logo')],  # Include Logo directory
+    datas=[logo_data],  # Include Logo directory
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui', 
@@ -51,13 +60,14 @@ exe = EXE(
 )
 
 # For macOS, create an app bundle
-app = BUNDLE(
-    exe,
-    name='M(H)ero.app',
-    icon=None,  # Add 'icon.icns' if you create one
-    bundle_identifier='com.magneticity.mhero',
-    info_plist={
-        'NSHighResolutionCapable': 'True',
-        'LSBackgroundOnly': 'False',
-    },
-)
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        exe,
+        name='M(H)ero.app',
+        icon=None,  # Add 'icon.icns' if you create one
+        bundle_identifier='com.magneticity.mhero',
+        info_plist={
+            'NSHighResolutionCapable': 'True',
+            'LSBackgroundOnly': 'False',
+        },
+    )

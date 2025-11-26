@@ -11,9 +11,10 @@
 4. If macOS blocks it (security), right-click → Open, then click "Open" in the dialog
 
 **Windows:**
-1. Download `M(H)ero.zip`
+1. Download `M(H)ero-Windows.zip`
 2. Extract the zip file
 3. Double-click `M(H)ero.exe` to run
+4. If Windows blocks it (SmartScreen), click "More info" → "Run anyway"
 
 ### Quick Start
 1. Click "📁 Open File" to load hysteresis data
@@ -36,8 +37,11 @@
 git clone https://github.com/magneticity/M-H-ero.git
 cd M-H-ero
 
-# Run the complete setup and build script
+# macOS/Linux:
 ./setup_and_build.sh
+
+# Windows:
+setup_and_build.bat
 
 # The executable will be in the 'dist' folder
 ```
@@ -95,6 +99,3 @@ M(H)ero/
 - matplotlib
 - numpy
 - pandas
-
-## License
-[Add your license here]

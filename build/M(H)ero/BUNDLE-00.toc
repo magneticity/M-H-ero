@@ -1,0 +1,3 @@
+([('M(H)ero',
+   '/Users/willgriggs/Library/CloudStorage/OneDrive-Personal/Documents/DKO/M(H)ero/dist/M(H)ero',
+   'EXECUTABLE')],)
