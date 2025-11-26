@@ -1336,6 +1336,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.openFileToolBtn.setMinimumHeight(35)
         self.openFileToolBtn.clicked.connect(self.open_file)
         
+        self.loadHistoryToolBtn = QtWidgets.QToolButton()
+        self.loadHistoryToolBtn.setText("📋 Load History")
+        self.loadHistoryToolBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self.loadHistoryToolBtn.setMinimumHeight(35)
+        self.loadHistoryToolBtn.setToolTip("Load and replay history from JSON file")
+        self.loadHistoryToolBtn.clicked.connect(self.load_history)
+        
         self.exportToolBtn = QtWidgets.QToolButton()
         self.exportToolBtn.setText("💾 Export TXT")
         self.exportToolBtn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
@@ -1350,6 +1357,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.autoProcessToolBtn.clicked.connect(self.auto_process)
         
         logo_layout.addWidget(self.openFileToolBtn)
+        logo_layout.addWidget(self.loadHistoryToolBtn)
         logo_layout.addWidget(self.exportToolBtn)
         logo_layout.addWidget(self.autoProcessToolBtn)
         logo_layout.addStretch(1)
@@ -1820,6 +1828,61 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Export error", str(e))
             self.status.showMessage("Error exporting history")
+
+    def load_history(self):
+        """Load history from JSON file, reset to original data, and replay operations."""
+        if self.original_df is None:
+            QtWidgets.QMessageBox.warning(self, "No data",
+                                         "Load a data file first before loading history.")
+            return
+
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load history from JSON",
+            self.last_path or "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+
+        import json
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded_history = json.load(f)
+            
+            if not isinstance(loaded_history, list):
+                QtWidgets.QMessageBox.warning(self, "Invalid history",
+                                             "History file must contain a JSON array.")
+                return
+            
+            # Reset to original data and clear current history
+            self.df = self.original_df.copy(deep=True)
+            self.history = []
+            
+            # Replay all operations from loaded history
+            for entry in loaded_history:
+                if not isinstance(entry, dict) or "op" not in entry or "params" not in entry:
+                    continue
+                try:
+                    self._apply_operation(entry["op"], entry["params"], record=True)
+                except Exception as e:
+                    print(f"Error applying operation {entry.get('op')}: {e}")
+                    continue
+            
+            # Recompute numeric columns and repopulate UI
+            self.numeric_cols = [
+                c for c in self.df.columns if np.issubdtype(self.df[c].dtype, np.number)
+            ]
+            self._populate_combos()
+            self._replot()
+            
+            num_ops = len(loaded_history)
+            self.status.showMessage(f"Loaded and applied {num_ops} operation(s) from history")
+            QtWidgets.QMessageBox.information(self, "History loaded",
+                                            f"Successfully loaded and applied {num_ops} operation(s).")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Load error", str(e))
+            self.status.showMessage("Error loading history")
 
     # Updates m/M label texts based on current Y quantity type
     def _update_y_quantity_labels(self):
@@ -3218,7 +3281,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # Step 2: Detect and apply drift correction (BEFORE centering Y!)
         try:
             drift_detected, drift_threshold = self._detect_drift(x_name, y_name)
-            print(f"DEBUG: drift_detected={drift_detected}, drift_threshold={drift_threshold}")
             if drift_detected:
                 # Apply drift correction with detected threshold
                 self._apply_drift_correction_auto(x_name, y_name, drift_threshold)
@@ -3262,7 +3324,6 @@ class MainWindow(QtWidgets.QMainWindow):
         
         finite = np.isfinite(x) & np.isfinite(y)
         if finite.sum() < 10:
-            print(f"DEBUG _detect_drift: Not enough finite points ({finite.sum()})")
             return False, None
         
         x = x[finite]
@@ -3279,15 +3340,11 @@ class MainWindow(QtWidgets.QMainWindow):
         neg_high_field = (x <= -high_field_threshold)
         
         if pos_high_field.sum() < 1 or neg_high_field.sum() < 1:
-            print(f"DEBUG _detect_drift: Not enough points on both branches "
-                  f"(pos={pos_high_field.sum()}, neg={neg_high_field.sum()})")
             return False, None
         
         # Get average y-value at positive and negative high field
         y_pos_avg = np.mean(y[pos_high_field])
         y_neg_avg = np.mean(y[neg_high_field])
-        
-        print(f"DEBUG _detect_drift: y_pos_avg={y_pos_avg:.6g}, y_neg_avg={y_neg_avg:.6g}")
         
         # Compare y values at these high-field branches
         y_first = y_pos_avg
@@ -3298,16 +3355,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # Compare the absolute difference against the y-range
         y_range = np.max(y) - np.min(y)
         if y_range == 0:
-            print(f"DEBUG _detect_drift: y_range is zero")
             return False, None
         
         # The midpoint between first and last should be near zero for no drift
         y_midpoint = (y_first + y_last) / 2.0
         drift_magnitude = np.abs(y_midpoint) / y_range
-        
-        print(f"DEBUG _detect_drift: y_first={y_first:.6g}, y_last={y_last:.6g}, "
-              f"y_midpoint={y_midpoint:.6g}, y_range={y_range:.6g}, "
-              f"drift_magnitude={drift_magnitude:.6g} (threshold=0.005)")
         
         # Drift detected if midpoint is > 0.5% of range from zero
         if drift_magnitude > 0.005:
@@ -3327,14 +3379,12 @@ class MainWindow(QtWidgets.QMainWindow):
         
         finite = np.isfinite(x) & np.isfinite(y)
         if finite.sum() < 10:
-            print(f"DEBUG _detect_background: Not enough finite points ({finite.sum()})")
             return None
         
         x = x[finite]
         y = y[finite]
         
         x_max = np.max(np.abs(x))
-        print(f"DEBUG _detect_background: x_max={x_max:.6g}, testing thresholds...")
         
         # Test multiple threshold candidates (50%, 60%, 70%, 80% of max field)
         candidates = [0.5, 0.6, 0.7, 0.8]
@@ -3349,8 +3399,6 @@ class MainWindow(QtWidgets.QMainWindow):
             mask_neg = x <= -threshold
             
             if mask_pos.sum() < 3 or mask_neg.sum() < 3:
-                print(f"DEBUG _detect_background: frac={frac:.1f}, not enough points "
-                      f"(pos={mask_pos.sum()}, neg={mask_neg.sum()})")
                 continue
             
             # Fit lines to positive and negative branches
@@ -3382,9 +3430,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 y_range = np.max(np.abs(y)) - np.min(np.abs(y))
                 normalized_slope = avg_slope * x_max / y_range if y_range > 0 else 0
                 
-                print(f"DEBUG _detect_background: frac={frac:.1f}, r2_pos={r2_pos:.6f}, r2_neg={r2_neg:.6f}, "
-                      f"avg_r2={avg_r2:.6f}, normalized_slope={normalized_slope:.6f}")
-                
                 # Good background if reasonably linear (R² > 0.70) - apply even if slope is small
                 if avg_r2 > 0.70 and avg_r2 > best_linearity:
                     best_linearity = avg_r2
@@ -3393,7 +3438,6 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 continue
         
-        print(f"DEBUG _detect_background: best_threshold={best_threshold}, best_linearity={best_linearity:.6f}")
         return best_threshold
 
     def _apply_drift_correction_auto(self, x_name, y_name, threshold):
