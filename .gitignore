@@ -1,0 +1,44 @@
+# Python virtual environment
+env/
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# pytest
+.pytest_cache/
+
+# Test outputs
+*.txt.test
+*.json.test
+
+# User data files (examples for testing)
+*.dat
+*.csv
+*.tsv
+*.vhd
+!tests/fixtures/*.dat
+!tests/fixtures/*.csv
+!tests/fixtures/*.txt
+
+# History exports
+*_history.json
