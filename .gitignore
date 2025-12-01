@@ -9,6 +9,9 @@ __pycache__/
 *$py.class
 *.so
 
+# Github
+.github/
+
 # PyInstaller build artifacts
 build/
 dist/
