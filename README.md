@@ -1,7 +1,5 @@
 # M(H)ero - Hysteresis Loop Analysis Tool
 
-## For Users
-
 ### Running the Application
 
 **macOS:**
@@ -22,8 +20,6 @@
 3. Use the Analysis menu for coercivity, remanence, and anisotropy calculations
 
 ---
-
-## For Developers
 
 ### Building from Source
 
