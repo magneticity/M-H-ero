@@ -1,18 +1,23 @@
 # M(H)ero - Hysteresis Loop Analysis Tool
 
-### Running the Application
+A GUI application for analyzing magnetic hysteresis loops with automated drift and background correction.
 
-**macOS:**
-1. Download `M(H)ero.zip`
-2. Extract the zip file
-3. Double-click `M(H)ero.app` to run
-4. If macOS blocks it (security), right-click → Open, then click "Open" in the dialog
+---
 
-**Windows:**
-1. Download `M(H)ero-Windows.zip`
-2. Extract the zip file
-3. Double-click `M(H)ero.exe` to run
-4. If Windows blocks it (SmartScreen), click "More info" → "Run anyway"
+## For End Users
+
+### Download Pre-built Application
+
+**Option 1: Download Release (Recommended)**
+1. Go to [Releases](https://github.com/magneticity/M-H-ero/releases)
+2. Download the version for your platform:
+   - **macOS**: `M(H)ero-macOS.zip`
+   - **Windows**: `M(H)ero-Windows.zip`
+3. Extract and run:
+   - **macOS**: Double-click `M(H)ero.app` (if blocked by security, right-click → Open)
+   - **Windows**: Double-click `M(H)ero.exe` (if blocked by SmartScreen, click "More info" → "Run anyway")
+
+**Option 2: Build from Source** (see Developer section below)
 
 ### Quick Start
 1. Click "📁 Open File" to load hysteresis data
@@ -20,6 +25,8 @@
 3. Use the Analysis menu for coercivity, remanence, and anisotropy calculations
 
 ---
+
+## For Developers
 
 ### Building from Source
 
@@ -70,24 +77,47 @@ pip install pyinstaller
 # The executable will be in the 'dist' folder
 ```
 
-**Distribution Checklist:**
-- [ ] Test the executable on a clean machine (without Python installed)
-- [ ] Include sample data files
-- [ ] Test auto-process feature
-- [ ] Test history export/import
-- [ ] Verify logo displays correctly
+**Running Directly (without building):**
+```bash
+# After installing dependencies
+python "M(H)ero.py"
+```
+
+### Creating a Release
+
+After building the executable:
+
+1. **Test the executable** on a clean machine without Python
+2. **Package for distribution:**
+   - **macOS**: Zip the `dist/M(H)ero.app` → `M(H)ero-macOS.zip`
+   - **Windows**: Zip the `dist/M(H)ero.exe` folder → `M(H)ero-Windows.zip`
+3. **Create GitHub Release:**
+   - Go to repository → Releases → "Draft a new release"
+   - Create a tag (e.g., `v1.0.0`)
+   - Upload the zip files
+   - Add release notes
+
+**Note:** Built executables (`.app`, `.exe`) are **not** stored in the repository - they're generated during build and distributed via GitHub Releases.
 
 ---
 
 ## Project Structure
 ```
 M(H)ero/
-├── M(H)ero.py          # Main application
-├── Logo/               # Application logo
+├── M(H)ero.py              # Main application
+├── M(H)ero.spec            # PyInstaller build configuration
+├── Logo/                   # Application logo
 │   └── logo_white.png
-├── env/                # Virtual environment (not distributed)
-├── build_app.sh        # Build script
-└── README.md           # This file
+├── tests/                  # Test suite
+├── tools/                  # Utility scripts
+├── setup_and_build.sh      # Automated build (macOS/Linux)
+├── setup_and_build.bat     # Automated build (Windows)
+└── build_simple.sh         # Simple build script
+
+Not in repo (generated locally):
+├── env/                    # Virtual environment (created by build scripts)
+├── build/                  # PyInstaller temporary files
+└── dist/                   # Built executables (.app or .exe)
 ```
 
 ## Dependencies
