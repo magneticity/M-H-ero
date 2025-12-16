@@ -82,23 +82,6 @@ pip install pyinstaller
 # After installing dependencies
 python "M(H)ero.py"
 ```
-
-### Creating a Release
-
-After building the executable:
-
-1. **Test the executable** on a clean machine without Python
-2. **Package for distribution:**
-   - **macOS**: Zip the `dist/M(H)ero.app` → `M(H)ero-macOS.zip`
-   - **Windows**: Zip the `dist/M(H)ero.exe` folder → `M(H)ero-Windows.zip`
-3. **Create GitHub Release:**
-   - Go to repository → Releases → "Draft a new release"
-   - Create a tag (e.g., `v1.0.0`)
-   - Upload the zip files
-   - Add release notes
-
-**Note:** Built executables (`.app`, `.exe`) are **not** stored in the repository - they're generated during build and distributed via GitHub Releases.
-
 ---
 
 ## Project Structure
