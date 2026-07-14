@@ -1865,6 +1865,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     continue
                 try:
                     self._apply_operation(entry["op"], entry["params"], record=True)
+                    self._restore_axis_semantics_after_history_entry(entry)
                 except Exception as e:
                     print(f"Error applying operation {entry.get('op')}: {e}")
                     continue
@@ -5257,6 +5258,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         target_quantity = "m" if current_quantity == "M" else "M"
         direction = "M_to_m" if current_quantity == "M" else "m_to_M"
+        axes_state_before = self._axis_semantics_state()
+        axes_state_after = dict(axes_state_before)
+        axes_state_after["y_quantity_type"] = target_quantity
+        axes_state_after["y_unit_system"] = system
 
         params = {
             "column": y_name,
@@ -5266,6 +5271,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "system": system,                      # 'SI' or 'cgs-emu/Gaussian'
             "volume_value": vol_value,
             "volume_units": vol_units,             # 'm^3' or 'cm^3'
+            "axes_state_before": axes_state_before,
+            "axes_state_after": axes_state_after,
         }
 
         try:
@@ -5319,6 +5326,8 @@ class MainWindow(QtWidgets.QMainWindow):
                             "system": system,
                             "volume_value": vol_value,
                             "volume_units": vol_units,
+                            "axes_state_before": axes_state_before,
+                            "axes_state_after": axes_state_after,
                             "num_datasets": applied,
                             "scale_factor_list": scale_factor_list,
                             "applied_datasets": [ds.get('path') for ds in self.dataset_list],
@@ -5418,6 +5427,15 @@ class MainWindow(QtWidgets.QMainWindow):
             elif y_type_str == "Magnetic moment m":
                 y_q = "m"
 
+        axes_state_before = self._axis_semantics_state()
+        axes_state_after = dict(axes_state_before)
+        if convert_x and x_q is not None:
+            axes_state_after["x_quantity_type"] = x_q
+            axes_state_after["x_unit_system"] = to_sys
+        if convert_y and y_q is not None:
+            axes_state_after["y_quantity_type"] = y_q
+            axes_state_after["y_unit_system"] = to_sys
+
         params = {
             "from_system": from_sys,
             "to_system": to_sys,
@@ -5425,6 +5443,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "mag_column": y_name if convert_y else None,
             "field_quantity": x_q,
             "mag_quantity": y_q,
+            "axes_state_before": axes_state_before,
+            "axes_state_after": axes_state_after,
         }
 
         try:
@@ -5472,6 +5492,8 @@ class MainWindow(QtWidgets.QMainWindow):
                             "mag_column": y_name if convert_y else None,
                             "field_quantity": x_q,
                             "mag_quantity": y_q,
+                            "axes_state_before": axes_state_before,
+                            "axes_state_after": axes_state_after,
                             "num_datasets": applied,
                             "applied_datasets": [ds.get('path') for ds in self.dataset_list],
                         },
@@ -5941,6 +5963,66 @@ class MainWindow(QtWidgets.QMainWindow):
         # optional: print to console for debugging
         # print("HISTORY:", entry)
 
+    def _axis_semantics_state(self):
+        """Snapshot axis quantity/unit metadata for history undo/reload."""
+        return {
+            "x_quantity_type": self.x_quantity_type,
+            "x_unit_system": self.x_unit_system,
+            "y_quantity_type": self.y_quantity_type,
+            "y_unit_system": self.y_unit_system,
+        }
+
+    def _restore_axis_semantics_state(self, state):
+        """Restore axis quantity/unit metadata from a history snapshot."""
+        if not isinstance(state, dict):
+            return False
+
+        self.x_quantity_type = state.get("x_quantity_type")
+        self.x_unit_system = state.get("x_unit_system")
+        self.y_quantity_type = state.get("y_quantity_type")
+        self.y_unit_system = state.get("y_unit_system")
+        self._update_y_quantity_labels()
+        return True
+
+    def _restore_axis_semantics_after_undo(self, history_entry):
+        """Restore metadata affected by undoing a data operation."""
+        if not isinstance(history_entry, dict):
+            return
+
+        op = history_entry.get("op")
+        params = history_entry.get("params", {})
+        if not isinstance(params, dict):
+            return
+
+        if self._restore_axis_semantics_state(params.get("axes_state_before")):
+            return
+
+        # Backward compatibility for older histories that did not store an
+        # explicit axis snapshot.
+        if op in ("volume_normalisation", "volume_normalisation_multi"):
+            self.y_quantity_type = params.get("current_quantity", self.y_quantity_type)
+            self.y_unit_system = params.get("system", self.y_unit_system)
+            self._update_y_quantity_labels()
+
+    def _restore_axis_semantics_after_history_entry(self, history_entry):
+        """Restore metadata after replaying a history entry."""
+        if not isinstance(history_entry, dict):
+            return
+
+        op = history_entry.get("op")
+        params = history_entry.get("params", {})
+        if not isinstance(params, dict):
+            return
+
+        if self._restore_axis_semantics_state(params.get("axes_state_after")):
+            return
+
+        # Backward compatibility for older exported histories.
+        if op in ("volume_normalisation", "volume_normalisation_multi"):
+            self.y_quantity_type = params.get("target_quantity", self.y_quantity_type)
+            self.y_unit_system = params.get("system", self.y_unit_system)
+            self._update_y_quantity_labels()
+
     def undo_last_operation(self):
         """Remove the last operation from history and rebuild df from scratch."""
         # Handle multi-dataset mode
@@ -5953,6 +6035,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Remove last operation from global history
             last = self.history.pop()
             last_op = last['op']
+            self._restore_axis_semantics_after_undo(last)
 
             # If it's a multi-dataset operation, also remove the last operation
             # from each dataset's per-dataset history (they were added during commit)
@@ -5992,6 +6075,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Remove last operation
         last = self.history.pop()
+        self._restore_axis_semantics_after_undo(last)
 
         # Rebuild df from original + remaining history
         self._rebuild_df_from_history()
