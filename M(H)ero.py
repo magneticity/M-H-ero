@@ -1893,6 +1893,41 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "Load error", str(e))
             self.status.showMessage("Error")
 
+    # Helper (non-GUI) to load a single file programmatically (used in tests)
+    def _open_file(self, path):
+        """Programmatically load a single file (no dialogs)."""
+        if not path:
+            return
+
+        # Any file-open should start fresh: clear multi-dataset state
+        self.dataset_list = []
+        self.multi_mode = False
+
+        # Always clear current single-dataset state on new file
+        self.df = None
+        self.original_df = None
+        self.history = []
+
+        # Reset axis semantics, don't replot until combos are set
+        self._reset_axes_semantics(replot=False)
+
+        df = self._read_table_auto(path)
+
+        # Keep original copy + working copy
+        self.original_df = df.copy(deep=True)
+        self.df = df
+        self.last_path = path
+
+        self.numeric_cols = [
+            c for c in self.df.columns if np.issubdtype(self.df[c].dtype, np.number)
+        ]
+        if len(self.numeric_cols) < 2:
+            raise ValueError("Need at least two numeric columns to plot.")
+
+        self._populate_combos()
+        self._replot()
+        self._update_menu_states()
+
     # Helper (non-GUI) to load multiple files programmatically (used in tests)
     def _open_files(self, paths):
         """Programmatically load multiple files into multi-dataset mode (no dialogs)."""
