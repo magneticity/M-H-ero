@@ -410,6 +410,14 @@ class CalculationWindow(QtWidgets.QWidget):
                 if ms0 is not None and ms0 > 0:
                     H_K = 2.0 * E / ms0
                     out_lines.append(f"H_K = {H_K:.6g} Oe")
+            elif yq0 == 'm_mass':
+                # specific energy per mass (erg/g)
+                E_spec = diff
+                out_lines.append(f"E_a,spec = {E_spec:.6g} erg/g")
+                ms_spec = meta0.get('Ms')
+                if ms_spec is not None and ms_spec > 0:
+                    H_K = 2.0 * E_spec / ms_spec
+                    out_lines.append(f"H_K = {H_K:.6g} Oe")
             else:
                 out_lines.append("(units: cgs, unknown quantity pairing)")
         elif xsys0 == 'SI':
@@ -428,6 +436,12 @@ class CalculationWindow(QtWidgets.QWidget):
                 ms0 = meta0.get('Ms')
                 if ms0 is not None and ms0 > 0:
                     H_K = 2.0 * energy / (mu0 * ms0)
+                    out_lines.append(f"H_K = {H_K:.6g} A/m")
+            elif yq0 == 'm_mass':
+                out_lines.append(f"E_a,spec = {energy:.6g} J/kg")
+                ms_spec = meta0.get('Ms')
+                if ms_spec is not None and ms_spec > 0:
+                    H_K = 2.0 * energy / (mu0 * ms_spec)
                     out_lines.append(f"H_K = {H_K:.6g} A/m")
             else:
                 out_lines.append("(units: SI, unknown quantity pairing)")
@@ -454,6 +468,16 @@ class CalculationWindow(QtWidgets.QWidget):
                 ms0 = meta0.get('Ms')
                 if ms0 is not None and ms0 > 0:
                     H_K_hl = 2.0 * E_cgs / ms0
+                    out_lines.append(f"H_K = {H_K_hl:.6g} HL units")
+            elif yq0 == 'm_mass':
+                E_cgs_spec = diff
+                E_si_spec = 0.1 * diff
+                out_lines.append(
+                    f"E_a,spec = {E_cgs_spec:.6g} erg/g ≈ {E_si_spec:.6g} J/kg (Heaviside–Lorentz)"
+                )
+                ms_spec = meta0.get('Ms')
+                if ms_spec is not None and ms_spec > 0:
+                    H_K_hl = 2.0 * E_cgs_spec / ms_spec
                     out_lines.append(f"H_K = {H_K_hl:.6g} HL units")
             else:
                 out_lines.append("(units: HL, unknown quantity pairing)")
@@ -733,16 +757,18 @@ class UnitHelpDialog(QtWidgets.QDialog):
             "- Field **H**: A/m\n"
             "- Magnetisation **M**: A/m\n"
             "- Moment **m**: A·m²\n"
+            "- Specific moment **m/mass**: A·m²/kg\n"
             "- Flux density **B**: T (Tesla)\n\n"
             "### cgs-emu/Gaussian\n"
             "- Field **H**: Oe (Oersted)\n"
             "- Magnetisation **M**: emu/cm³\n"
             "- Moment **m**: emu\n"
+            "- Specific moment **m/mass**: emu/g\n"
             "- Flux density **B**: G (Gauss)\n\n"
             "### Heaviside–Lorentz (HL)\n"
             "Rationalized Gaussian system. Same integral values as Gaussian but with scaled field/magnetisation:\n"
             "- **H** and **B** scaled by 1/√(4π) relative to Gaussian\n"
-            "- **M** and **m** scaled by √(4π) relative to Gaussian\n"
+            "- **M**, **m**, and **m/mass** scaled by √(4π) relative to Gaussian\n"
             "- Use HL when working with rationalized CGS data.\n\n"
             "## Quick Conversions\n"
             "- 1 erg/cm³ = 0.1 J/m³\n"
@@ -816,10 +842,12 @@ class SetAxesDialog(QtWidgets.QDialog):
         self.radioYUnknown = QtWidgets.QRadioButton("Unknown / ambiguous")
         self.radioY_M = QtWidgets.QRadioButton("Magnetisation M")
         self.radioY_m = QtWidgets.QRadioButton("Magnetic moment m")
+        self.radioY_m_mass = QtWidgets.QRadioButton("Specific moment m/mass")
 
         y_layout.addWidget(self.radioYUnknown)
         y_layout.addWidget(self.radioY_M)
         y_layout.addWidget(self.radioY_m)
+        y_layout.addWidget(self.radioY_m_mass)
         layout.addWidget(groupY)
 
         # Preselect Y type
@@ -827,6 +855,8 @@ class SetAxesDialog(QtWidgets.QDialog):
             self.radioY_M.setChecked(True)
         elif current_y_type == "m":
             self.radioY_m.setChecked(True)
+        elif current_y_type == "m_mass":
+            self.radioY_m_mass.setChecked(True)
         else:
             self.radioYUnknown.setChecked(True)
 
@@ -872,7 +902,8 @@ class SetAxesDialog(QtWidgets.QDialog):
         info = QtWidgets.QLabel(
             "This changes how axis labels and loop parameters are labelled, "
             "but does not modify the data. Use 'Convert units' to actually "
-            "change numerical units."
+            "change numerical units, or 'Y normalisation' to convert between "
+            "M, m, and m/mass."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -897,9 +928,9 @@ class SetAxesDialog(QtWidgets.QDialog):
         """
         Returns:
           x_type: None, 'H', or 'B'
-          x_system: None, 'SI', or 'cgs-emu/Gaussian'
-          y_type: None, 'M', or 'm'
-          y_system: None, 'SI', or 'cgs-emu/Gaussian'
+                    x_system: None, 'SI', 'cgs-emu/Gaussian', or 'Heaviside-Lorentz'
+                    y_type: None, 'M', 'm', or 'm_mass'
+                    y_system: None, 'SI', 'cgs-emu/Gaussian', or 'Heaviside-Lorentz'
         """
         # X type
         if self.radioX_H.isChecked():
@@ -925,6 +956,8 @@ class SetAxesDialog(QtWidgets.QDialog):
             y_type = "M"
         elif self.radioY_m.isChecked():
             y_type = "m"
+        elif self.radioY_m_mass.isChecked():
+            y_type = "m_mass"
         else:
             y_type = None
 
@@ -959,10 +992,12 @@ class SetYQuantityDialog(QtWidgets.QDialog):
         self.radioUnknown = QtWidgets.QRadioButton("Unknown / ambiguous")
         self.radioM = QtWidgets.QRadioButton("Magnetisation M")
         self.radio_m = QtWidgets.QRadioButton("Magnetic moment m")
+        self.radio_m_mass = QtWidgets.QRadioButton("Specific moment m/mass")
 
         y_layout.addWidget(self.radioUnknown)
         y_layout.addWidget(self.radioM)
         y_layout.addWidget(self.radio_m)
+        y_layout.addWidget(self.radio_m_mass)
         layout.addWidget(groupY)
 
         # Preselect based on current_type
@@ -970,6 +1005,8 @@ class SetYQuantityDialog(QtWidgets.QDialog):
             self.radioM.setChecked(True)
         elif current_type == "m":
             self.radio_m.setChecked(True)
+        elif current_type == "m_mass":
+            self.radio_m_mass.setChecked(True)
         else:
             self.radioUnknown.setChecked(True)
 
@@ -981,8 +1018,9 @@ class SetYQuantityDialog(QtWidgets.QDialog):
         self.systemCombo.addItem("Unspecified")
         self.systemCombo.addItem("SI")
         self.systemCombo.addItem("cgs-emu/Gaussian")
+        self.systemCombo.addItem("Heaviside-Lorentz")
 
-        if current_system in ("SI", "cgs-emu/Gaussian"):
+        if current_system in ("SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"):
             idx = self.systemCombo.findText(current_system)
             if idx >= 0:
                 self.systemCombo.setCurrentIndex(idx)
@@ -1010,13 +1048,15 @@ class SetYQuantityDialog(QtWidgets.QDialog):
     def get_selection(self):
         """
         Returns:
-          y_type: None, 'M' or 'm'
-          y_system: None, 'SI' or 'cgs-emu/Gaussian'
+          y_type: None, 'M', 'm', or 'm_mass'
+                    y_system: None, 'SI', 'cgs-emu/Gaussian', or 'Heaviside-Lorentz'
         """
         if self.radioM.isChecked():
             y_type = "M"
         elif self.radio_m.isChecked():
             y_type = "m"
+        elif self.radio_m_mass.isChecked():
+            y_type = "m_mass"
         else:
             y_type = None
 
@@ -1025,6 +1065,8 @@ class SetYQuantityDialog(QtWidgets.QDialog):
             y_system = "SI"
         elif sys_text == "cgs-emu/Gaussian":
             y_system = "cgs-emu/Gaussian"
+        elif sys_text == "Heaviside-Lorentz":
+            y_system = "Heaviside-Lorentz"
         else:
             y_system = None
 
@@ -1032,16 +1074,17 @@ class SetYQuantityDialog(QtWidgets.QDialog):
 
 class VolumeNormalisationDialog(QtWidgets.QDialog):
     """
-    Dialog to convert the Y axis between magnetisation M and moment m
-    using a specified sample volume.
+    Dialog to normalise Y data by volume or mass.
 
-    Supports:
-      - SI:   M in A/m,        m in A·m^2,  V in m^3
-      - cgs:  M in emu/cm^3,   m in emu,    V in cm^3
+    Quantity codes:
+      - M:       magnetisation (per volume)
+      - m:       magnetic moment
+      - m_mass:  specific magnetic moment (per mass)
     """
     def __init__(self, parent=None, known_y_type=None, known_y_system=None):
         super().__init__(parent)
-        self.setWindowTitle("Volume normalisation")
+        self.setWindowTitle("Y normalisation")
+        self.setToolTip("Convert Y between per-volume, total moment, and per-mass forms.")
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -1050,17 +1093,29 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         y_layout = QtWidgets.QVBoxLayout(groupY)
         self.radioY_M = QtWidgets.QRadioButton("Magnetisation M")
         self.radioY_m = QtWidgets.QRadioButton("Magnetic moment m")
+        self.radioY_m_mass = QtWidgets.QRadioButton("Specific moment (m/mass)")
         self.radioY_M.setChecked(True)
         y_layout.addWidget(self.radioY_M)
         y_layout.addWidget(self.radioY_m)
+        y_layout.addWidget(self.radioY_m_mass)
         layout.addWidget(groupY)
+
+        # Normalisation basis
+        groupNorm = QtWidgets.QGroupBox("Normalisation basis")
+        norm_layout = QtWidgets.QVBoxLayout(groupNorm)
+        self.radioNormVolume = QtWidgets.QRadioButton("Volume")
+        self.radioNormMass = QtWidgets.QRadioButton("Weight (sample mass)")
+        self.radioNormVolume.setChecked(True)
+        norm_layout.addWidget(self.radioNormVolume)
+        norm_layout.addWidget(self.radioNormMass)
+        layout.addWidget(groupNorm)
 
         # Unit system for Y
         form = QtWidgets.QFormLayout()
         layout.addLayout(form)
 
         self.systemCombo = QtWidgets.QComboBox()
-        self.systemCombo.addItems(["SI", "cgs-emu/Gaussian"])
+        self.systemCombo.addItems(["SI", "cgs-emu/Gaussian", "Heaviside-Lorentz"])
         form.addRow("Unit system for Y:", self.systemCombo)
 
         # Volume input: use a QLineEdit with a regex validator accepting
@@ -1087,6 +1142,27 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         vol_hbox.addWidget(self.volUnitsCombo)
 
         form.addRow("Sample volume:", vol_hbox)
+        self.volSpin.setToolTip("Used when converting between M and m (or m/mass and M).")
+        self.volUnitsCombo.setToolTip("Volume units for the sample value.")
+
+        self.massSpin = QtWidgets.QLineEdit()
+        self.massSpin.setPlaceholderText("1.0")
+        self.massSpin.setText("1.0")
+        try:
+            validator_mass = QtGui.QRegularExpressionValidator(QtCore.QRegularExpression(regex))
+            self.massSpin.setValidator(validator_mass)
+        except Exception:
+            pass
+
+        self.massUnitsCombo = QtWidgets.QComboBox()
+        self.massUnitsCombo.addItems(["kg", "g", "mg"])
+
+        mass_hbox = QtWidgets.QHBoxLayout()
+        mass_hbox.addWidget(self.massSpin)
+        mass_hbox.addWidget(self.massUnitsCombo)
+        form.addRow("Sample mass:", mass_hbox)
+        self.massSpin.setToolTip("Used when converting to/from mass-normalised moment.")
+        self.massUnitsCombo.setToolTip("Mass units for the sample value.")
 
         # Info label: describes what will happen
         self.infoLabel = QtWidgets.QLabel()
@@ -1095,6 +1171,9 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
         # React to radio changes to update info
         self.radioY_M.toggled.connect(self._update_info_label)
         self.radioY_m.toggled.connect(self._update_info_label)
+        self.radioY_m_mass.toggled.connect(self._update_info_label)
+        self.radioNormVolume.toggled.connect(self._update_info_label)
+        self.radioNormMass.toggled.connect(self._update_info_label)
 
         # Apply known Y info, if any
         if known_y_type is not None:
@@ -1102,9 +1181,12 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
                 self.radioY_M.setChecked(True)
             elif known_y_type == "m":
                 self.radioY_m.setChecked(True)
+            elif known_y_type == "m_mass":
+                self.radioY_m_mass.setChecked(True)
             # Lock the choice
             self.radioY_M.setEnabled(False)
             self.radioY_m.setEnabled(False)
+            self.radioY_m_mass.setEnabled(False)
 
         if known_y_system is not None:
             idx = self.systemCombo.findText(known_y_system)
@@ -1125,63 +1207,106 @@ class VolumeNormalisationDialog(QtWidgets.QDialog):
 
     def _update_info_label(self):
         if self.radioY_M.isChecked():
-            text = "Conversion: M → m  (multiply by volume V)"
+            current_quantity = "M"
+        elif self.radioY_m_mass.isChecked():
+            current_quantity = "m_mass"
         else:
-            text = "Conversion: m → M  (divide by volume V)"
+            current_quantity = "m"
+
+        basis = "volume" if self.radioNormVolume.isChecked() else "mass"
+
+        direction = None
+        needs_volume = False
+        needs_mass = False
+
+        # Interpret basis as the TARGET normalisation basis.
+        if basis == "volume":
+            if current_quantity == "M":
+                text = "Already volume-normalised (M). No data change will be applied."
+            elif current_quantity == "m":
+                direction = "m_to_M"
+                needs_volume = True
+                text = "Conversion: m -> M  (divide by volume V)"
+            else:
+                direction = "m_mass_to_M"
+                needs_volume = True
+                needs_mass = True
+                text = "Conversion: m/mass -> M  (multiply by mass, divide by volume)"
+        else:
+            if current_quantity == "m_mass":
+                text = "Already mass-normalised (m/mass). No data change will be applied."
+            elif current_quantity == "m":
+                direction = "m_to_m_mass"
+                needs_mass = True
+                text = "Conversion: m -> m/mass  (divide by mass)"
+            else:
+                direction = "M_to_m_mass"
+                needs_volume = True
+                needs_mass = True
+                text = "Conversion: M -> m/mass  (multiply by volume, divide by mass)"
+
+        # Enable only the inputs required for the selected conversion.
+        self.volSpin.setEnabled(needs_volume)
+        self.volUnitsCombo.setEnabled(needs_volume)
+        self.massSpin.setEnabled(needs_mass)
+        self.massUnitsCombo.setEnabled(needs_mass)
+
+        if direction is None:
+            text += "\nTip: change basis or quantity selection to perform a conversion."
+
         self.infoLabel.setText(text)
 
     def get_selection(self):
         """
         Returns:
-          current_quantity: 'M' or 'm'
-          system: 'SI' or 'cgs-emu/Gaussian'
+          current_quantity: 'M', 'm', or 'm_mass'
+          system: 'SI', 'cgs-emu/Gaussian', or 'Heaviside-Lorentz'
+          normalisation_basis: 'volume' or 'mass'
           volume_value: float
           volume_units: 'm^3' or 'cm^3'
+          mass_value: float
+          mass_units: 'kg' or 'g' or 'mg'
         """
-        current_quantity = "M" if self.radioY_M.isChecked() else "m"
-        system = self.systemCombo.currentText()
-        # Parse volume value from the line edit; accept scientific notation
-        try:
-            volume_value = float(self.volSpin.text())
-        except Exception:
-            volume_value = 1.0
-        volume_units = self.volUnitsCombo.currentText()
-        return current_quantity, system, volume_value, volume_units
-
-
-    def _update_info_label(self):
         if self.radioY_M.isChecked():
-            text = "Conversion: M → m  (multiply by volume V)"
+            current_quantity = "M"
+        elif self.radioY_m_mass.isChecked():
+            current_quantity = "m_mass"
         else:
-            text = "Conversion: m → M  (divide by volume V)"
-        self.infoLabel.setText(text)
+            current_quantity = "m"
 
-    def get_selection(self):
-        """
-        Returns:
-          current_quantity: 'M' or 'm'
-          system: 'SI' or 'cgs-emu/Gaussian'
-          volume_value: float
-          volume_units: 'm^3' or 'cm^3'
-        """
-        current_quantity = "M" if self.radioY_M.isChecked() else "m"
         system = self.systemCombo.currentText()
+        normalisation_basis = "volume" if self.radioNormVolume.isChecked() else "mass"
         try:
             volume_value = float(self.volSpin.text())
         except Exception:
             volume_value = 1.0
         volume_units = self.volUnitsCombo.currentText()
-        return current_quantity, system, volume_value, volume_units
+        try:
+            mass_value = float(self.massSpin.text())
+        except Exception:
+            mass_value = 1.0
+        mass_units = self.massUnitsCombo.currentText()
+        return (
+            current_quantity,
+            system,
+            normalisation_basis,
+            volume_value,
+            volume_units,
+            mass_value,
+            mass_units,
+        )
 
 class UnitConversionDialog(QtWidgets.QDialog):
     """
     Dialog to choose unit systems and what each axis represents.
 
-    Assumes:
-      - X axis = field-like (H or B)
-      - Y axis = magnetisation-like (M or m)
+        Assumes:
+            - X axis = field-like (H or B)
+            - Y axis = magnetisation-like (M, m, or m/mass)
     """
-    def __init__(self, parent=None, known_y_type=None, known_y_system=None):
+    def __init__(self, parent=None,
+                 known_x_type=None, known_x_system=None,
+                 known_y_type=None, known_y_system=None):
         super().__init__(parent)
         self.setWindowTitle("Convert units")
 
@@ -1205,7 +1330,7 @@ class UnitConversionDialog(QtWidgets.QDialog):
         hl_tooltip = (
             "Heaviside–Lorentz (HL) is the rationalized form of Gaussian units.\n"
             "Conversions use SI ↔ Gaussian factors then apply HL rationalization:\n"
-            "H,B scaled by 1/√(4π); M,m scaled by √(4π)."
+            "H,B scaled by 1/√(4π); M,m,m/mass scaled by √(4π)."
         )
 
         def _update_tooltips(_=None):
@@ -1230,7 +1355,11 @@ class UnitConversionDialog(QtWidgets.QDialog):
         self.xTypeCombo.addItems(["Field H", "Flux density B"])
 
         self.yTypeCombo = QtWidgets.QComboBox()
-        self.yTypeCombo.addItems(["Magnetisation M", "Magnetic moment m"])
+        self.yTypeCombo.addItems([
+            "Magnetisation M",
+            "Magnetic moment m",
+            "Specific moment m/mass",
+        ])
 
         axis_form.addRow("X axis represents:", self.xTypeCombo)
         axis_form.addRow("Y axis represents:", self.yTypeCombo)
@@ -1244,18 +1373,45 @@ class UnitConversionDialog(QtWidgets.QDialog):
         layout.addWidget(self.chkConvertField)
         layout.addWidget(self.chkConvertMag)
 
-        # If we already know Y type / system, preselect + lock them
-        if known_y_system is not None:
-            idx = self.fromCombo.findText(known_y_system)
+        # If we already know current system from axis semantics, preselect it.
+        # If both axes are known but disagree, keep editable and show guidance.
+        known_system = None
+        if known_x_system is not None and known_y_system is not None:
+            if known_x_system == known_y_system:
+                known_system = known_x_system
+            else:
+                warn = QtWidgets.QLabel(
+                    "X and Y are tagged with different current systems. "
+                    "Please choose the current system manually before converting."
+                )
+                warn.setWordWrap(True)
+                layout.addWidget(warn)
+        elif known_x_system is not None:
+            known_system = known_x_system
+        elif known_y_system is not None:
+            known_system = known_y_system
+
+        if known_system is not None:
+            idx = self.fromCombo.findText(known_system)
             if idx >= 0:
                 self.fromCombo.setCurrentIndex(idx)
             self.fromCombo.setEnabled(False)   # current system is fixed
+
+        # If we already know X type, preselect + lock it
+        if known_x_type is not None:
+            if known_x_type == "H":
+                self.xTypeCombo.setCurrentText("Field H")
+            elif known_x_type == "B":
+                self.xTypeCombo.setCurrentText("Flux density B")
+            self.xTypeCombo.setEnabled(False)
 
         if known_y_type is not None:
             if known_y_type == "M":
                 self.yTypeCombo.setCurrentText("Magnetisation M")
             elif known_y_type == "m":
                 self.yTypeCombo.setCurrentText("Magnetic moment m")
+            elif known_y_type == "m_mass":
+                self.yTypeCombo.setCurrentText("Specific moment m/mass")
             self.yTypeCombo.setEnabled(False)  # Y meaning is fixed
 
         # Buttons
@@ -1390,7 +1546,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bgCancelBtn.clicked.connect(self._bg_cancel)
 
         # Track physical quantity types and unit systems for axes
-        self.y_quantity_type = None      # None = unknown/ambiguous, 'M' = magnetisation, 'm' = moment
+        self.y_quantity_type = None      # None, 'M', 'm', or 'm_mass' (specific moment)
         self.y_unit_system = None        # 'SI' or 'cgs-emu/Gaussian' or None
         self.x_quantity_type = None      # 'H', 'B', or None
         self.x_unit_system = None        # 'SI', 'cgs-emu/Gaussian', or None
@@ -1570,9 +1726,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.unitConvertAct.triggered.connect(self._open_unit_convert_dialog)
         process_menu.addAction(self.unitConvertAct)
 
-        # --- Volume normalisation ---
-        self.volNormAct = QtGui.QAction("Volume normalisation", self)
-        self.volNormAct.setStatusTip("Convert between moment m and magnetisation M using sample volume")
+        # --- Y normalisation ---
+        self.volNormAct = QtGui.QAction("Y normalisation", self)
+        self.volNormAct.setStatusTip("Normalise Y by volume or weight (mass)")
         self.volNormAct.setShortcut("Ctrl+M")
         self.volNormAct.triggered.connect(self._open_volume_normalisation_dialog)
         process_menu.addAction(self.volNormAct)
@@ -1889,7 +2045,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_y_quantity_labels(self):
         """
         Update textual labels for Y-dependent parameters (Mr, Ms) based on
-        whether Y is magnetisation M, moment m, or unknown.
+        whether Y is magnetisation M, moment m, specific moment m/mass,
+        or unknown.
         """
         q = self.y_quantity_type
 
@@ -1905,6 +2062,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lblMrPlusCaption.setText("mr+:")
             self.lblMrMinusCaption.setText("mr−:")
             self.lblMsCaption.setText("m\u209B (sat):")   # ms with subscript s
+        elif q == "m_mass":
+            # Specific magnetic moment (per mass)
+            self.lblMrCaption.setText("mr/mass (mag):")
+            self.lblMrPlusCaption.setText("mr/mass+:")
+            self.lblMrMinusCaption.setText("mr/mass−:")
+            self.lblMsCaption.setText("ms/mass (sat):")
         else:
             # Unknown / ambiguous
             self.lblMrCaption.setText("Rem (Y):")
@@ -2171,6 +2334,15 @@ class MainWindow(QtWidgets.QMainWindow):
                     return 'm (HL units)'
                 else:
                     return 'm'
+            elif qtype == 'm_mass':
+                if qsys == 'SI':
+                    return 'm/mass (A·m²/kg)'
+                elif qsys == 'cgs-emu/Gaussian':
+                    return 'm/mass (emu/g)'
+                elif qsys == 'Heaviside-Lorentz':
+                    return 'm/mass (emu/g, HL)'
+                else:
+                    return 'm/mass'
             else:
                 return fallback
 
@@ -2219,6 +2391,24 @@ class MainWindow(QtWidgets.QMainWindow):
                     return 'HL units'
                 else:
                     return 'B·M'
+            elif xq == 'H' and yq == 'm_mass':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'A/m·A·m²/kg'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'Oe·emu/g'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units per mass'
+                else:
+                    return 'H·m/mass'
+            elif xq == 'B' and yq == 'm_mass':
+                if xsys == 'SI' and ysys == 'SI':
+                    return 'T·A·m²/kg'
+                elif xsys == 'cgs-emu/Gaussian' and ysys == 'cgs-emu/Gaussian':
+                    return 'G·emu/g'
+                elif xsys == 'Heaviside-Lorentz' and ysys == 'Heaviside-Lorentz':
+                    return 'HL units per mass'
+                else:
+                    return 'B·m/mass'
             else:
                 return f'{xq}·{yq}'
 
@@ -2582,43 +2772,75 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not np.issubdtype(s.dtype, np.number):
                     return
 
-                direction = params.get("direction")           # 'M_to_m' or 'm_to_M'
-                system = params.get("system")                 # 'SI' or 'cgs-emu/Gaussian'
+                direction = params.get("direction")
+                system = params.get("system")
+                normalisation_basis = params.get("normalisation_basis", "volume")
                 vol_value = params.get("volume_value")
                 vol_units = params.get("volume_units")
+                mass_value = params.get("mass_value")
+                mass_units = params.get("mass_units")
 
-                if vol_value is None or vol_value <= 0:
-                    raise ValueError("Sample volume must be positive.")
-
-                # Determine effective volume in the natural units of that system
-                # SI:   M [A/m],   m [A·m^2],   V [m^3]
-                # cgs:  M [emu/cm^3], m [emu],  V [cm^3]
-                if system == "SI":
-                    if vol_units == "m^3":
-                        V_eff = float(vol_value)
-                    elif vol_units == "cm^3":
-                        V_eff = float(vol_value) * 1.0e-6   # 1 cm^3 = 1e-6 m^3
-                    else:
-                        raise ValueError(f"Unsupported volume units '{vol_units}' for SI.")
-                elif system == "cgs-emu/Gaussian":
-                    if vol_units == "cm^3":
-                        V_eff = float(vol_value)
-                    elif vol_units == "m^3":
-                        V_eff = float(vol_value) * 1.0e6    # 1 m^3 = 1e6 cm^3
-                    else:
-                        raise ValueError(f"Unsupported volume units '{vol_units}' for cgs.")
-                else:
+                system_uses_si_units = (system == "SI")
+                system_uses_cgs_like_units = system in ("cgs-emu/Gaussian", "Heaviside-Lorentz")
+                if not system_uses_si_units and not system_uses_cgs_like_units:
                     raise ValueError(f"Unsupported unit system '{system}'.")
 
-                # Compute scale factor: m = M * V, M = m / V
+                def _volume_effective(value, units):
+                    if value is None or value <= 0:
+                        raise ValueError("Sample volume must be positive.")
+                    if system_uses_si_units:
+                        if units == "m^3":
+                            return float(value)
+                        if units == "cm^3":
+                            return float(value) * 1.0e-6
+                        raise ValueError(f"Unsupported volume units '{units}' for SI.")
+                    if units == "cm^3":
+                        return float(value)
+                    if units == "m^3":
+                        return float(value) * 1.0e6
+                    raise ValueError(f"Unsupported volume units '{units}' for {system}.")
+
+                def _mass_effective(value, units):
+                    if value is None or value <= 0:
+                        raise ValueError("Sample mass must be positive.")
+                    if system_uses_si_units:
+                        if units == "kg":
+                            return float(value)
+                        if units == "g":
+                            return float(value) * 1.0e-3
+                        if units == "mg":
+                            return float(value) * 1.0e-6
+                        raise ValueError(f"Unsupported mass units '{units}' for SI.")
+                    if units == "g":
+                        return float(value)
+                    if units == "kg":
+                        return float(value) * 1.0e3
+                    if units == "mg":
+                        return float(value) * 1.0e-3
+                    raise ValueError(f"Unsupported mass units '{units}' for {system}.")
+
+                needs_volume = direction in ("M_to_m", "m_to_M", "M_to_m_mass", "m_mass_to_M")
+                needs_mass = direction in ("m_to_m_mass", "m_mass_to_m", "M_to_m_mass", "m_mass_to_M")
+
+                V_eff = _volume_effective(vol_value, vol_units) if needs_volume else None
+                m_eff = _mass_effective(mass_value, mass_units) if needs_mass else None
+
+                # Compute scale factor for selected conversion.
                 if "scale_factor" in params and not record:
-                    # Replaying from history: use stored factor for reproducibility
                     scale_factor = float(params["scale_factor"])
                 else:
                     if direction == "M_to_m":
                         scale_factor = V_eff
                     elif direction == "m_to_M":
                         scale_factor = 1.0 / V_eff
+                    elif direction == "m_to_m_mass":
+                        scale_factor = 1.0 / m_eff
+                    elif direction == "m_mass_to_m":
+                        scale_factor = m_eff
+                    elif direction == "M_to_m_mass":
+                        scale_factor = V_eff / m_eff
+                    elif direction == "m_mass_to_M":
+                        scale_factor = m_eff / V_eff
                     else:
                         raise ValueError(f"Unknown direction '{direction}' in volume_normalisation.")
 
@@ -4941,7 +5163,7 @@ class MainWindow(QtWidgets.QMainWindow):
             #  - M, m : multiply by sqrt(4π)
             if q in ("H", "B"):
                 return 1.0 / np.sqrt(four_pi)
-            if q in ("M", "m"):
+            if q in ("M", "m", "m_mass"):
                 return np.sqrt(four_pi)
             return 1.0
 
@@ -5217,7 +5439,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return noise_std
 
     def _open_volume_normalisation_dialog(self):
-        """Open the volume normalisation dialog and apply if accepted."""
+        """Open the Y normalisation dialog and apply if accepted."""
         y_name = self.yCombo.currentText()
         
         # Check if we have data and valid column
@@ -5226,16 +5448,16 @@ class MainWindow(QtWidgets.QMainWindow):
             if not y_name or y_name not in self.dataset_list[0]['df'].columns:
                 QtWidgets.QMessageBox.warning(
                     self, "Select Y column",
-                    "Select a Y column (moment or magnetisation) before volume normalisation."
+                    "Select a Y column before normalisation."
                 )
                 return
         elif self.df is None:
-            QtWidgets.QMessageBox.warning(self, "No data", "Load data before volume normalisation.")
+            QtWidgets.QMessageBox.warning(self, "No data", "Load data before normalisation.")
             return
         elif not y_name or y_name not in self.df.columns:
             QtWidgets.QMessageBox.warning(
                 self, "Select Y column",
-                "Select a Y column (moment or magnetisation) before volume normalisation."
+                "Select a Y column before normalisation."
             )
             return
 
@@ -5247,17 +5469,58 @@ class MainWindow(QtWidgets.QMainWindow):
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
 
-        current_quantity, system, vol_value, vol_units = dlg.get_selection()
+        (
+            current_quantity,
+            system,
+            normalisation_basis,
+            vol_value,
+            vol_units,
+            mass_value,
+            mass_units,
+        ) = dlg.get_selection()
 
-        if vol_value <= 0:
+        if normalisation_basis == "volume":
+            if current_quantity == "M":
+                self.status.showMessage("Y normalisation: already volume-normalised (M).")
+                return
+            if current_quantity == "m":
+                target_quantity = "M"
+                direction = "m_to_M"
+            elif current_quantity == "m_mass":
+                target_quantity = "M"
+                direction = "m_mass_to_M"
+            else:
+                raise ValueError(f"Unsupported quantity '{current_quantity}' for volume basis.")
+        else:
+            if current_quantity == "m_mass":
+                self.status.showMessage("Y normalisation: already mass-normalised (m/mass).")
+                return
+            if current_quantity == "m":
+                target_quantity = "m_mass"
+                direction = "m_to_m_mass"
+            elif current_quantity == "M":
+                target_quantity = "m_mass"
+                direction = "M_to_m_mass"
+            else:
+                raise ValueError(f"Unsupported quantity '{current_quantity}' for mass basis.")
+
+        needs_volume = direction in ("M_to_m", "m_to_M", "M_to_m_mass", "m_mass_to_M")
+        needs_mass = direction in ("m_to_m_mass", "m_mass_to_m", "M_to_m_mass", "m_mass_to_M")
+
+        if needs_volume and vol_value <= 0:
             QtWidgets.QMessageBox.warning(
                 self, "Invalid volume",
                 "Sample volume must be positive."
             )
             return
 
-        target_quantity = "m" if current_quantity == "M" else "M"
-        direction = "M_to_m" if current_quantity == "M" else "m_to_M"
+        if needs_mass and mass_value <= 0:
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid mass",
+                "Sample mass must be positive."
+            )
+            return
+
         axes_state_before = self._axis_semantics_state()
         axes_state_after = dict(axes_state_before)
         axes_state_after["y_quantity_type"] = target_quantity
@@ -5265,12 +5528,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         params = {
             "column": y_name,
-            "current_quantity": current_quantity,  # 'M' or 'm'
+            "current_quantity": current_quantity,  # 'M', 'm', or 'm_mass'
             "target_quantity": target_quantity,
-            "direction": direction,                # 'M_to_m' or 'm_to_M'
-            "system": system,                      # 'SI' or 'cgs-emu/Gaussian'
+            "direction": direction,
+            "normalisation_basis": normalisation_basis,
+            "system": system,
             "volume_value": vol_value,
-            "volume_units": vol_units,             # 'm^3' or 'cm^3'
+            "volume_units": vol_units,
+            "mass_value": mass_value,
+            "mass_units": mass_units,
             "axes_state_before": axes_state_before,
             "axes_state_after": axes_state_after,
         }
@@ -5323,9 +5589,12 @@ class MainWindow(QtWidgets.QMainWindow):
                             "current_quantity": current_quantity,
                             "target_quantity": target_quantity,
                             "direction": direction,
+                            "normalisation_basis": normalisation_basis,
                             "system": system,
                             "volume_value": vol_value,
                             "volume_units": vol_units,
+                            "mass_value": mass_value,
+                            "mass_units": mass_units,
                             "axes_state_before": axes_state_before,
                             "axes_state_after": axes_state_after,
                             "num_datasets": applied,
@@ -5334,13 +5603,21 @@ class MainWindow(QtWidgets.QMainWindow):
                         },
                     )
                 
-                msg = f"Volume normalisation: {current_quantity} → {target_quantity} for {applied} dataset(s)"
+                basis_label = "volume" if normalisation_basis == "volume" else "weight"
+                msg = (
+                    f"Y normalisation ({basis_label}): "
+                    f"{current_quantity} -> {target_quantity} for {applied} dataset(s)"
+                )
                 if failed:
                     msg += f"; {len(failed)} failed"
             else:
                 # Single-dataset mode
                 self._apply_operation("volume_normalisation", params, record=True)
-                msg = f"Volume normalisation: {current_quantity} → {target_quantity} (V={vol_value:g} {vol_units}, system={system})"
+                basis_label = "volume" if normalisation_basis == "volume" else "weight"
+                msg = (
+                    f"Y normalisation ({basis_label}): {current_quantity} -> {target_quantity} "
+                    f"(V={vol_value:g} {vol_units}, m={mass_value:g} {mass_units}, system={system})"
+                )
 
             # Update semantic state before replotting, so labels use it
             self.y_quantity_type = target_quantity   # 'M' or 'm' after conversion
@@ -5352,12 +5629,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.showMessage(msg)
 
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Volume normalisation error", str(e))
+            QtWidgets.QMessageBox.critical(self, "Normalisation error", str(e))
 
     def _open_unit_convert_dialog(self):
         """Open the unit conversion dialog and apply conversion if accepted."""
         x_name = self.xCombo.currentText()
         y_name = self.yCombo.currentText()
+
+        if (
+            self.x_unit_system is not None
+            and self.y_unit_system is not None
+            and self.x_unit_system != self.y_unit_system
+        ):
+            self.status.showMessage(
+                "Convert units: X/Y systems differ; please confirm Current system in the dialog."
+            )
         
         # Check if we have data
         if self.multi_mode and self.dataset_list:
@@ -5377,6 +5663,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         dlg = UnitConversionDialog(
             self,
+            known_x_type=self.x_quantity_type,
+            known_x_system=self.x_unit_system,
             known_y_type=self.y_quantity_type,
             known_y_system=self.y_unit_system,
         )
@@ -5399,7 +5687,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Not implemented",
                 (
                     "Unit conversion is currently implemented for SI, cgs-emu/Gaussian, "
-                    "and Heaviside-Lorentz (rationalized Gaussian) for H, B, M, and m.\n\n"
+                    "and Heaviside-Lorentz (rationalized Gaussian) for H, B, M, m, and m/mass.\n\n"
                     "Other systems are not yet supported."
                 ),
             )
@@ -5426,6 +5714,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 y_q = "M"
             elif y_type_str == "Magnetic moment m":
                 y_q = "m"
+            elif y_type_str == "Specific moment m/mass":
+                y_q = "m_mass"
 
         axes_state_before = self._axis_semantics_state()
         axes_state_after = dict(axes_state_before)
@@ -5535,6 +5825,7 @@ class MainWindow(QtWidgets.QMainWindow):
           B : flux density
           M : magnetisation
           m : magnetic moment
+                    m_mass : specific magnetic moment (per mass)
         """
         if quantity is None or from_sys == to_sys:
             return 1.0
@@ -5551,7 +5842,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def _gauss_to_hl_scale(q):
             if q in ("H", "B"):
                 return 1.0 / np.sqrt(four_pi)
-            if q in ("M", "m"):
+            if q in ("M", "m", "m_mass"):
                 return np.sqrt(four_pi)
             return 1.0
 
@@ -5565,6 +5856,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return 1.0e-3
             elif quantity == "m":
                 return 1.0e3
+            elif quantity == "m_mass":
+                return 1.0
 
         # Gaussian -> SI
         if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "SI":
@@ -5576,6 +5869,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 return 1.0e3
             elif quantity == "m":
                 return 1.0e-3
+            elif quantity == "m_mass":
+                return 1.0
 
         # SI <-> Heaviside-Lorentz via Gaussian
         if from_sys_c == "SI" and to_sys_c == "Heaviside-Lorentz":
@@ -5588,6 +5883,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 base = 1.0e-3
             elif quantity == "m":
                 base = 1.0e3
+            elif quantity == "m_mass":
+                base = 1.0
             if base is None:
                 raise ValueError("Unknown quantity")
             return base * _gauss_to_hl_scale(quantity)
@@ -5603,6 +5900,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 base = 1.0e3
             elif quantity == "m":
                 base = 1.0e-3
+            elif quantity == "m_mass":
+                base = 1.0
             if base is None:
                 raise ValueError("Unknown quantity")
             # HL->Gaussian scaling is inverse of Gaussian->HL
@@ -5612,13 +5911,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if from_sys_c == "cgs-emu/Gaussian" and to_sys_c == "Heaviside-Lorentz":
             if quantity in ("H", "B"):
                 return 1.0 / np.sqrt(four_pi)
-            if quantity in ("M", "m"):
+            if quantity in ("M", "m", "m_mass"):
                 return np.sqrt(four_pi)
 
         if from_sys_c == "Heaviside-Lorentz" and to_sys_c == "cgs-emu/Gaussian":
             if quantity in ("H", "B"):
                 return np.sqrt(four_pi)
-            if quantity in ("M", "m"):
+            if quantity in ("M", "m", "m_mass"):
                 return 1.0 / np.sqrt(four_pi)
 
         raise ValueError(
@@ -5678,6 +5977,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 return "emu"
             elif s == "Heaviside-Lorentz":
                 return "emu (HL)"
+        elif q == "m_mass":
+            if s == "SI":
+                return "A·m^2/kg"
+            elif s == "cgs-emu/Gaussian":
+                return "emu/g"
+            elif s == "Heaviside-Lorentz":
+                return "emu/g (HL)"
 
         return None  # unknown
 
@@ -5707,8 +6013,8 @@ class MainWindow(QtWidgets.QMainWindow):
         q = self.y_quantity_type
         units = self._get_y_units_string()
 
-        if q in ("M", "m"):
-            base = q
+        if q in ("M", "m", "m_mass"):
+            base = "m/mass" if q == "m_mass" else q
             if units:
                 return f"{base} ({units})"
             else:
@@ -5770,6 +6076,10 @@ class MainWindow(QtWidgets.QMainWindow):
             label_Ms = "ms"
             label_Mr_plus = "mr+"
             label_Mr_minus = "mr−"
+        elif q == "m_mass":
+            label_Ms = "ms/mass"
+            label_Mr_plus = "mr/mass+"
+            label_Mr_minus = "mr/mass−"
         else:
             label_Ms = "Ys"
             label_Mr_plus = "Yr+"
