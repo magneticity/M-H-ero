@@ -4,8 +4,6 @@ A GUI application for analyzing magnetic hysteresis loops with automated drift a
 
 ---
 
-## For End Users
-
 ### Download Pre-built Application
 
 **Option 1: Download Release (Recommended)**
@@ -25,8 +23,6 @@ A GUI application for analyzing magnetic hysteresis loops with automated drift a
 3. Use the Analysis menu for coercivity, remanence, and anisotropy calculations
 
 ---
-
-## For Developers
 
 ### Building from Source
 
