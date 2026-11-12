@@ -5,8 +5,6 @@ A GUI application for analyzing magnetic hysteresis loops with automated drift a
 ---
 
 ### Download Pre-built Application
-
-**Option 1: Download Release (Recommended)**
 1. Go to [Releases](https://github.com/magneticity/M-H-ero/releases)
 2. Download the version for your platform:
    - **macOS**: `M(H)ero-macOS.zip`
@@ -14,8 +12,6 @@ A GUI application for analyzing magnetic hysteresis loops with automated drift a
 3. Extract and run:
    - **macOS**: Double-click `M(H)ero.app` (if blocked by security, right-click → Open)
    - **Windows**: Double-click `M(H)ero.exe` (if blocked by SmartScreen, click "More info" → "Run anyway")
-
-**Option 2: Build from Source** (see Developer section below)
 
 ### Quick Start
 1. Click "📁 Open File" to load hysteresis data
